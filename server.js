@@ -3,20 +3,20 @@ const cors = require('cors');
 const { Pool } = require('pg');
 
 const app = express();
-const PORT = 3000;
 
-// Configuración de PostgreSQL
+// ✅ CONFIGURACIÓN PARA RENDER - POSTGRESQL EN LA NUBE
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'stockbar_db',
-  password: '1234',
-  port: 5432,
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // Middlewares
 app.use(cors());
 app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
 
 // Función para generar HTML con estilos
 const generarHTML = (titulo, datos, columnas) => {
@@ -637,14 +637,34 @@ app.get('/api/test-db', async (req, res) => {
     `;
     res.send(html);
   } catch (error) {
-    res.status(500).send(`Error: ${error.message}`);
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <title>Error BD - StockBar</title>
+          <style>
+              body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+              .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+              .error { color: #e74c3c; font-size: 1.2em; margin: 20px 0; }
+              a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <h1>🔍 Error de Base de Datos</h1>
+              <div class="error">❌ Error: ${error.message}</div>
+              <a href="/">Volver al Inicio</a>
+          </div>
+      </body>
+      </html>
+    `;
+    res.status(500).send(html);
   }
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
-  console.log('🚀 Servidor API StockBar - SISTEMA COMPLETO');
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('🚀 Servidor API StockBar - CONECTADO A POSTGRESQL EN RENDER');
   console.log('📡 Puerto: ' + PORT);
-  console.log('🌐 URL: http://localhost:' + PORT);
-  console.log('📊 Módulos: 13 endpoints completos incluyendo detalles');
+  console.log('🌐 URL: https://api-stockbar.onrender.com');
 });
