@@ -1,96 +1,650 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
-// Configuración de PostgreSQL para desarrollo y producción
+// Configuración de PostgreSQL
 const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'stockbar_db',
-  password: process.env.DB_PASSWORD || '1234',
-  port: process.env.DB_PORT || 5432,
+  user: 'postgres',
+  host: 'localhost',
+  database: 'stockbar_db',
+  password: '1234',
+  port: 5432,
 });
 
 // Middlewares
 app.use(cors());
 app.use(express.json());
 
-// Ruta de prueba de conexión
+// Función para generar HTML con estilos
+const generarHTML = (titulo, datos, columnas) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>${titulo} - StockBar</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                margin: 20px; 
+                background-color: #f5f5f5;
+            }
+            .container { 
+                max-width: 1400px; 
+                margin: 0 auto; 
+                background: white; 
+                padding: 20px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h1 { 
+                color: #2c3e50; 
+                text-align: center; 
+                margin-bottom: 30px;
+            }
+            table { 
+                width: 100%; 
+                border-collapse: collapse; 
+                margin-bottom: 20px;
+                font-size: 0.9em;
+            }
+            th { 
+                background-color: #34495e; 
+                color: white; 
+                padding: 10px; 
+                text-align: left;
+            }
+            td { 
+                padding: 8px; 
+                border-bottom: 1px solid #ddd;
+            }
+            tr:nth-child(even) { 
+                background-color: #f8f9fa;
+            }
+            tr:hover { 
+                background-color: #e9f7fe;
+            }
+            .precio { 
+                text-align: right; 
+                font-weight: bold; 
+                color: #27ae60;
+            }
+            .stock { 
+                text-align: center;
+            }
+            .stock-bajo { 
+                color: #e74c3c; 
+                font-weight: bold;
+            }
+            .nav { 
+                text-align: center; 
+                margin: 20px 0;
+            }
+            .nav a { 
+                display: inline-block; 
+                margin: 3px; 
+                padding: 6px 12px; 
+                background: #3498db; 
+                color: white; 
+                text-decoration: none; 
+                border-radius: 5px;
+                font-size: 0.8em;
+            }
+            .nav a:hover { 
+                background: #2980b9;
+            }
+            .total { 
+                text-align: right; 
+                font-weight: bold; 
+                margin-top: 10px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🍻 ${titulo} - StockBar</h1>
+            <div class="nav">
+                <a href="/">Inicio</a>
+                <a href="/api/productos">Productos</a>
+                <a href="/api/clientes">Clientes</a>
+                <a href="/api/categorias">Categorías</a>
+                <a href="/api/ventas">Ventas</a>
+                <a href="/api/detalle-ventas">Detalle Ventas</a>
+                <a href="/api/compras">Compras</a>
+                <a href="/api/detalle-compras">Detalle Compras</a>
+                <a href="/api/proveedores">Proveedores</a>
+                <a href="/api/usuarios">Usuarios</a>
+                <a href="/api/roles">Roles</a>
+                <a href="/api/permisos">Permisos</a>
+                <a href="/api/detalle-roles">Detalle Roles</a>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        ${columnas.map(col => `<th>${col}</th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody>
+                    ${datos.map(fila => `
+                        <tr>
+                            ${fila.map((celda, index) => `
+                                <td class="${typeof celda === 'number' && celda > 10000 ? 'precio' : ''} 
+                                          ${index === 3 && celda < 10 ? 'stock-bajo' : 'stock'}">
+                                    ${typeof celda === 'number' && celda > 1000 ? `$${celda.toLocaleString()}` : celda}
+                                </td>
+                            `).join('')}
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+            <div class="total">Total: ${datos.length} registros</div>
+        </div>
+    </body>
+    </html>
+  `;
+};
+
+// Página principal con menú
+app.get('/', (req, res) => {
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>StockBar - Sistema de Gestión</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                margin: 0; 
+                padding: 0; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+            }
+            .container { 
+                max-width: 1400px; 
+                margin: 0 auto; 
+                padding: 40px 20px; 
+                text-align: center;
+            }
+            .header { 
+                background: white; 
+                padding: 30px; 
+                border-radius: 15px; 
+                box-shadow: 0 10px 30px rgba(0,0,0,0.2); 
+                margin-bottom: 30px;
+            }
+            h1 { 
+                color: #2c3e50; 
+                margin-bottom: 10px; 
+                font-size: 2.5em;
+            }
+            .subtitle { 
+                color: #7f8c8d; 
+                font-size: 1.2em; 
+                margin-bottom: 30px;
+            }
+            .menu { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                gap: 20px; 
+                margin-top: 30px;
+            }
+            .menu-item { 
+                background: white; 
+                padding: 20px; 
+                border-radius: 10px; 
+                text-decoration: none; 
+                color: #2c3e50; 
+                box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+                transition: transform 0.3s, box-shadow 0.3s;
+            }
+            .menu-item:hover { 
+                transform: translateY(-5px); 
+                box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            }
+            .menu-item h3 { 
+                margin: 0 0 10px 0; 
+                color: #3498db;
+                font-size: 1.1em;
+            }
+            .menu-item p { 
+                margin: 0; 
+                color: #7f8c8d; 
+                font-size: 0.8em;
+            }
+            .icon { 
+                font-size: 1.8em; 
+                margin-bottom: 10px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🍻 StockBar</h1>
+                <div class="subtitle">Sistema Completo de Gestión para Licorería</div>
+                
+                <div class="menu">
+                    <a href="/api/productos" class="menu-item">
+                        <div class="icon">📦</div>
+                        <h3>Productos</h3>
+                        <p>Gestionar inventario</p>
+                    </a>
+                    <a href="/api/clientes" class="menu-item">
+                        <div class="icon">👥</div>
+                        <h3>Clientes</h3>
+                        <p>Clientes registrados</p>
+                    </a>
+                    <a href="/api/categorias" class="menu-item">
+                        <div class="icon">📋</div>
+                        <h3>Categorías</h3>
+                        <p>Tipos de productos</p>
+                    </a>
+                    <a href="/api/ventas" class="menu-item">
+                        <div class="icon">💰</div>
+                        <h3>Ventas</h3>
+                        <p>Historial de ventas</p>
+                    </a>
+                    <a href="/api/detalle-ventas" class="menu-item">
+                        <div class="icon">🧾</div>
+                        <h3>Detalle Ventas</h3>
+                        <p>Detalles de ventas</p>
+                    </a>
+                    <a href="/api/compras" class="menu-item">
+                        <div class="icon">📥</div>
+                        <h3>Compras</h3>
+                        <p>Compras a proveedores</p>
+                    </a>
+                    <a href="/api/detalle-compras" class="menu-item">
+                        <div class="icon">📋</div>
+                        <h3>Detalle Compras</h3>
+                        <p>Detalles de compras</p>
+                    </a>
+                    <a href="/api/proveedores" class="menu-item">
+                        <div class="icon">🏢</div>
+                        <h3>Proveedores</h3>
+                        <p>Gestión de proveedores</p>
+                    </a>
+                    <a href="/api/usuarios" class="menu-item">
+                        <div class="icon">👤</div>
+                        <h3>Usuarios</h3>
+                        <p>Administración</p>
+                    </a>
+                    <a href="/api/roles" class="menu-item">
+                        <div class="icon">🔐</div>
+                        <h3>Roles</h3>
+                        <p>Roles del sistema</p>
+                    </a>
+                    <a href="/api/permisos" class="menu-item">
+                        <div class="icon">🔑</div>
+                        <h3>Permisos</h3>
+                        <p>Permisos de acceso</p>
+                    </a>
+                    <a href="/api/detalle-roles" class="menu-item">
+                        <div class="icon">⚙️</div>
+                        <h3>Detalle Roles</h3>
+                        <p>Asignación permisos</p>
+                    </a>
+                    <a href="/api/test-db" class="menu-item">
+                        <div class="icon">⚡</div>
+                        <h3>Estado BD</h3>
+                        <p>Verificar conexión</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+  res.send(html);
+});
+
+// ==================== ENDPOINTS PARA TODAS LAS TABLAS ====================
+
+// 1. PRODUCTOS
+app.get('/api/productos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.id_producto, p.nombre, c.nombre as categoria, 
+             p.stock, p.precio_compra, p.precio_venta, 
+             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM productos p 
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria 
+      ORDER BY p.id_producto
+    `);
+    
+    const columnas = ['ID', 'Producto', 'Categoría', 'Stock', 'Precio Compra', 'Precio Venta', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_producto,
+      row.nombre,
+      row.categoria,
+      row.stock,
+      row.precio_compra,
+      row.precio_venta,
+      row.estado
+    ]);
+    
+    res.send(generarHTML('Productos - Licorería', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 2. CLIENTES
+app.get('/api/clientes', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM clientes ORDER BY id_cliente');
+    
+    const columnas = ['ID', 'Nombre', 'Documento', 'Teléfono', 'Dirección', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_cliente,
+      row.nombre,
+      `${row.tipo_documento}: ${row.documento}`,
+      row.telefono,
+      row.direccion,
+      row.estado === 1 ? 'Activo' : 'Inactivo'
+    ]);
+    
+    res.send(generarHTML('Clientes', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 3. CATEGORÍAS
+app.get('/api/categorias', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM categorias ORDER BY id_categoria');
+    
+    const columnas = ['ID', 'Categoría', 'Descripción', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_categoria,
+      row.nombre,
+      row.descripcion,
+      row.estado === 1 ? 'Activa' : 'Inactiva'
+    ]);
+    
+    res.send(generarHTML('Categorías', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 4. VENTAS
+app.get('/api/ventas', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT v.id_venta, c.nombre as cliente, 
+             TO_CHAR(v.fecha, 'DD/MM/YYYY HH24:MI') as fecha, 
+             v.total, 
+             CASE WHEN v.estado = 1 THEN 'Completada' ELSE 'Cancelada' END as estado
+      FROM ventas v 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      ORDER BY v.fecha DESC
+    `);
+    
+    const columnas = ['ID Venta', 'Cliente', 'Fecha', 'Total', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_venta,
+      row.cliente,
+      row.fecha,
+      row.total,
+      row.estado
+    ]);
+    
+    res.send(generarHTML('Ventas', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 5. DETALLE VENTAS
+app.get('/api/detalle-ventas', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT dv.*, p.nombre as producto_nombre, cl.nombre as cliente,
+             v.fecha, v.total as total_venta
+      FROM detalle_ventas dv
+      JOIN productos p ON dv.id_producto = p.id_producto
+      JOIN ventas v ON dv.id_venta = v.id_venta
+      JOIN clientes cl ON v.id_cliente = cl.id_cliente
+      ORDER BY dv.id_det_venta
+    `);
+    
+    const columnas = ['ID Detalle', 'Venta', 'Producto', 'Cliente', 'Cantidad', 'Precio', 'Subtotal', 'Fecha Venta', 'Total Venta'];
+    const datos = result.rows.map(row => [
+      row.id_det_venta,
+      row.id_venta,
+      row.producto_nombre,
+      row.cliente,
+      row.cantidad,
+      row.precio,
+      row.subtotal,
+      new Date(row.fecha).toLocaleString('es-CO'),
+      row.total_venta
+    ]);
+    
+    res.send(generarHTML('Detalle de Ventas', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 6. COMPRAS
+app.get('/api/compras', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.id_compra, p.nombre_razon_social as proveedor, 
+             TO_CHAR(c.fecha, 'DD/MM/YYYY HH24:MI') as fecha, 
+             c.total, c.numero_factura,
+             CASE WHEN c.estado = 1 THEN 'Completada' ELSE 'Cancelada' END as estado
+      FROM compras c 
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor 
+      ORDER BY c.fecha DESC
+    `);
+    
+    const columnas = ['ID Compra', 'Proveedor', 'Fecha', 'Total', 'N° Factura', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_compra,
+      row.proveedor,
+      row.fecha,
+      row.total,
+      row.numero_factura,
+      row.estado
+    ]);
+    
+    res.send(generarHTML('Compras a Proveedores', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 7. DETALLE COMPRAS
+app.get('/api/detalle-compras', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT dc.*, p.nombre as producto_nombre, c.numero_factura,
+             pr.nombre_razon_social as proveedor
+      FROM detalle_compras dc
+      JOIN productos p ON dc.id_producto = p.id_producto
+      JOIN compras c ON dc.id_compra = c.id_compra
+      JOIN proveedores pr ON c.id_proveedor = pr.id_proveedor
+      ORDER BY dc.id_det_compra
+    `);
+    
+    const columnas = ['ID Detalle', 'Compra', 'Producto', 'Cantidad', 'Precio', 'Subtotal', 'Proveedor', 'Factura'];
+    const datos = result.rows.map(row => [
+      row.id_det_compra,
+      row.id_compra,
+      row.producto_nombre,
+      row.cantidad,
+      row.precio,
+      row.subtotal,
+      row.proveedor,
+      row.numero_factura
+    ]);
+    
+    res.send(generarHTML('Detalle de Compras', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 8. PROVEEDORES
+app.get('/api/proveedores', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM proveedores ORDER BY id_proveedor');
+    
+    const columnas = ['ID', 'Proveedor', 'Documento', 'Contacto', 'Teléfono', 'Email', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_proveedor,
+      row.nombre_razon_social,
+      `${row.tipo_documento}: ${row.documento}`,
+      row.contacto,
+      row.telefono,
+      row.email,
+      row.estado === 1 ? 'Activo' : 'Inactivo'
+    ]);
+    
+    res.send(generarHTML('Proveedores', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 9. USUARIOS
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id_usuario, u.nombre_completo, u.usuario, u.email, 
+             r.nombre_rol, 
+             CASE WHEN u.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM usuarios u 
+      LEFT JOIN roles r ON u.id_rol = r.id_rol 
+      ORDER BY u.id_usuario
+    `);
+    
+    const columnas = ['ID', 'Nombre Completo', 'Usuario', 'Email', 'Rol', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_usuario,
+      row.nombre_completo,
+      row.usuario,
+      row.email,
+      row.nombre_rol,
+      row.estado
+    ]);
+    
+    res.send(generarHTML('Usuarios del Sistema', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 10. ROLES
+app.get('/api/roles', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM roles ORDER BY id_rol');
+    
+    const columnas = ['ID', 'Nombre Rol', 'Descripción', 'Estado'];
+    const datos = result.rows.map(row => [
+      row.id_rol,
+      row.nombre_rol,
+      row.descripcion,
+      row.estado === 1 ? 'Activo' : 'Inactivo'
+    ]);
+    
+    res.send(generarHTML('Roles del Sistema', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 11. PERMISOS
+app.get('/api/permisos', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.*, r.nombre_rol 
+      FROM permisos p 
+      LEFT JOIN roles r ON p.id_rol = r.id_rol 
+      ORDER BY p.id_permiso
+    `);
+    
+    const columnas = ['ID Permiso', 'Rol', 'ID Rol'];
+    const datos = result.rows.map(row => [
+      row.id_permiso,
+      row.nombre_rol,
+      row.id_rol
+    ]);
+    
+    res.send(generarHTML('Permisos del Sistema', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 12. VER_DETALLE_ROL
+app.get('/api/detalle-roles', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT vdr.*, r.nombre_rol, p.id_permiso
+      FROM ver_detalle_rol vdr 
+      LEFT JOIN roles r ON vdr.id_rol = r.id_rol 
+      LEFT JOIN permisos p ON vdr.id_permiso = p.id_permiso 
+      ORDER BY vdr.id_detalle
+    `);
+    
+    const columnas = ['ID Detalle', 'Rol', 'ID Rol', 'ID Permiso'];
+    const datos = result.rows.map(row => [
+      row.id_detalle,
+      row.nombre_rol,
+      row.id_rol,
+      row.id_permiso
+    ]);
+    
+    res.send(generarHTML('Detalle de Roles y Permisos', datos, columnas));
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// 13. Test de base de datos
 app.get('/api/test-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as current_time');
-    res.json({
-      success: true,
-      message: '✅ Conectado a PostgreSQL',
-      environment: process.env.NODE_ENV || 'development',
-      time: result.rows[0].current_time
-    });
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <title>Estado BD - StockBar</title>
+          <style>
+              body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+              .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+              .success { color: #27ae60; font-size: 1.2em; margin: 20px 0; }
+              .time { color: #7f8c8d; margin: 10px 0; }
+              a { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <h1>🔍 Estado de la Base de Datos</h1>
+              <div class="success">✅ Conectado a PostgreSQL correctamente</div>
+              <div class="time">Hora del servidor: ${result.rows[0].current_time}</div>
+              <a href="/">Volver al Inicio</a>
+          </div>
+      </body>
+      </html>
+    `;
+    res.send(html);
   } catch (error) {
-    res.json({
-      success: false,
-      message: '❌ Error: ' + error.message
-    });
+    res.status(500).send(`Error: ${error.message}`);
   }
-});
-
-// Obtener productos
-app.get('/api/productos', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM productos ORDER BY id_gendents');
-    res.json({
-      success: true,
-      data: result.rows,
-      total: result.rowCount
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      message: 'Error: ' + error.message,
-      data: []
-    });
-  }
-});
-
-// Obtener clientes
-app.get('/api/clientes', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM clientes ORDER BY id_clients');
-    res.json({
-      success: true,
-      data: result.rows,
-      total: result.rowCount
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      message: 'Error: ' + error.message,
-      data: []
-    });
-  }
-});
-
-// Ruta principal
-app.get('/', (req, res) => {
-  res.json({ 
-    mensaje: '¡API de StockBar funcionando! 🚀',
-    environment: process.env.NODE_ENV || 'development',
-    endpoints: {
-      test_db: '/api/test-db',
-      productos: '/api/productos',
-      clientes: '/api/clientes'
-    },
-    github: 'https://github.com/TU_USUARIO/api-stockbar'
-  });
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log('🚀 Servidor API StockBar iniciado');
-  console.log('📡 Puerto:', PORT);
-  console.log('🌐 Ambiente:', process.env.NODE_ENV || 'development');
-  console.log('🔗 URL: http://localhost:' + PORT);
+  console.log('🚀 Servidor API StockBar - SISTEMA COMPLETO');
+  console.log('📡 Puerto: ' + PORT);
+  console.log('🌐 URL: http://localhost:' + PORT);
+  console.log('📊 Módulos: 13 endpoints completos incluyendo detalles');
 });
