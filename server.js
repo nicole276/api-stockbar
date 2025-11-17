@@ -119,6 +119,7 @@ const generarHTML = (titulo, datos, columnas) => {
                 <a href="/api/roles">Roles</a>
                 <a href="/api/permisos">Permisos</a>
                 <a href="/api/detalle-roles">Detalle Roles</a>
+                <a href="/api/create-all-tables">⚡ Crear BD</a>
             </div>
             <table>
                 <thead>
@@ -247,7 +248,7 @@ app.get('/', (req, res) => {
                         <p>Historial de ventas</p>
                     </a>
                     <a href="/api/detalle-ventas" class="menu-item">
-                        <div class="icon">🧾</div>
+                        <div class="icon">📋</div>
                         <h3>Detalle Ventas</h3>
                         <p>Detalles de ventas</p>
                     </a>
@@ -286,10 +287,10 @@ app.get('/', (req, res) => {
                         <h3>Detalle Roles</h3>
                         <p>Asignación permisos</p>
                     </a>
-                    <a href="/api/test-db" class="menu-item">
+                    <a href="/api/create-all-tables" class="menu-item" style="background: #e74c3c; color: white;">
                         <div class="icon">⚡</div>
-                        <h3>Estado BD</h3>
-                        <p>Verificar conexión</p>
+                        <h3>Crear Base de Datos</h3>
+                        <p>Inicializar tablas y datos</p>
                     </a>
                 </div>
             </div>
@@ -298,6 +299,372 @@ app.get('/', (req, res) => {
     </html>
   `;
   res.send(html);
+});
+
+// ==================== ENDPOINT PARA CREAR TODAS LAS TABLAS ====================
+app.get('/api/create-all-tables', async (req, res) => {
+  try {
+    console.log('🔄 Creando tablas...');
+
+    // ==================== TABLA ROLES ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS roles (
+        id_rol SERIAL PRIMARY KEY,
+        nombre_rol VARCHAR(50),
+        descripcion VARCHAR(50),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA PERMISOS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS permisos (
+        id_permiso SERIAL PRIMARY KEY,
+        id_rol INTEGER
+      );
+    `);
+
+    // ==================== TABLA VER_DETALLE_ROL ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ver_detalle_rol (
+        id_detalle SERIAL PRIMARY KEY,
+        id_rol INTEGER REFERENCES roles(id_rol),
+        id_permiso INTEGER REFERENCES permisos(id_permiso)
+      );
+    `);
+
+    // ==================== TABLA USUARIOS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS usuarios (
+        id_usuario SERIAL PRIMARY KEY,
+        id_rol INTEGER REFERENCES roles(id_rol),
+        nombre_completo VARCHAR(50),
+        email VARCHAR(50) UNIQUE,
+        usuario VARCHAR(50),
+        contraseña VARCHAR(255),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA CATEGORIAS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS categorias (
+        id_categoria SERIAL PRIMARY KEY,
+        nombre VARCHAR(50),
+        descripcion VARCHAR(50),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA PRODUCTOS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS productos (
+        id_producto SERIAL PRIMARY KEY,
+        id_categoria INTEGER REFERENCES categorias(id_categoria),
+        nombre VARCHAR(50),
+        stock INTEGER,
+        precio_compra DECIMAL(10,2),
+        precio_venta DECIMAL(10,2),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA PROVEEDORES ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS proveedores (
+        id_proveedor SERIAL PRIMARY KEY,
+        nombre_razon_social VARCHAR(50),
+        tipo_documento VARCHAR(20),
+        documento INTEGER,
+        contacto VARCHAR(50),
+        telefono VARCHAR(15),
+        email VARCHAR(50),
+        direccion VARCHAR(50),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA COMPRAS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS compras (
+        id_compra SERIAL PRIMARY KEY,
+        id_proveedor INTEGER REFERENCES proveedores(id_proveedor),
+        fecha TIMESTAMP,
+        total DECIMAL(10,2),
+        numero_factura VARCHAR(50),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA DETALLE_COMPRAS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS detalle_compras (
+        id_det_compra SERIAL PRIMARY KEY,
+        id_compra INTEGER REFERENCES compras(id_compra),
+        id_producto INTEGER REFERENCES productos(id_producto),
+        cantidad INTEGER,
+        precio DECIMAL(10,2),
+        subtotal DECIMAL(10,2)
+      );
+    `);
+
+    // ==================== TABLA CLIENTES ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS clientes (
+        id_cliente SERIAL PRIMARY KEY,
+        nombre VARCHAR(50),
+        tipo_documento VARCHAR(20),
+        documento VARCHAR(20),
+        telefono VARCHAR(15),
+        direccion VARCHAR(50),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA VENTAS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ventas (
+        id_venta SERIAL PRIMARY KEY,
+        id_cliente INTEGER REFERENCES clientes(id_cliente),
+        fecha TIMESTAMP,
+        total DECIMAL(10,2),
+        estado SMALLINT
+      );
+    `);
+
+    // ==================== TABLA DETALLE_VENTAS ====================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS detalle_ventas (
+        id_det_venta SERIAL PRIMARY KEY,
+        id_venta INTEGER REFERENCES ventas(id_venta),
+        id_producto INTEGER REFERENCES productos(id_producto),
+        cantidad INTEGER,
+        precio DECIMAL(10,2),
+        subtotal DECIMAL(10,2)
+      );
+    `);
+
+    console.log('✅ Tablas creadas, insertando datos...');
+
+    // ==================== INSERTAR DATOS ====================
+
+    // ROLES
+    await pool.query(`
+      INSERT INTO roles (nombre_rol, descripcion, estado) VALUES
+      ('Administrador', 'Acceso total al sistema', 1),
+      ('Cajero', 'Puede realizar ventas', 1),
+      ('Bodeguero', 'Gestiona inventario', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // PERMISOS
+    await pool.query(`
+      INSERT INTO permisos (id_rol) VALUES (1), (2), (3)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // VER_DETALLE_ROL
+    await pool.query(`
+      INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES
+      (1, 1), (2, 2), (3, 3)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // USUARIOS
+    await pool.query(`
+      INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) VALUES
+      (1, 'Carlos Admin', 'admin@elbar.com', 'carlosadmin', 'admin123', 1),
+      (2, 'Maria Cajera', 'caja@elbar.com', 'mariacaja', 'caja123', 1),
+      (3, 'Pedro Bodega', 'bodega@elbar.com', 'pedrobodega', 'bodega123', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // CATEGORIAS
+    await pool.query(`
+      INSERT INTO categorias (nombre, descripcion, estado) VALUES
+      ('Licores', 'Bebidas alcoholicas fuertes', 1),
+      ('Cervezas', 'Cervezas nacionales e importadas', 1),
+      ('Cigarrillos', 'Marcas de cigarrillos', 1),
+      ('Dulcería', 'Snacks y botanas', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // PRODUCTOS
+    await pool.query(`
+      INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) VALUES
+      -- LICORES
+      (1, 'Aguardiente Antioqueño 750ml', 50, 35000, 52000, 1),
+      (1, 'Ron Medellín Añejo 750ml', 30, 45000, 65000, 1),
+      (1, 'Ron Viejo de Caldas 750ml', 25, 38000, 55000, 1),
+      (1, 'Whisky Old Parr 750ml', 15, 120000, 180000, 1),
+      (1, 'Whisky Buchanan''s 750ml', 12, 95000, 140000, 1),
+      (1, 'Tequila José Cuervo 750ml', 10, 85000, 125000, 1),
+      (1, 'Vino Gato Negro Tinto', 40, 25000, 38000, 1),
+      (1, 'Vino Casillero del Diablo', 20, 45000, 68000, 1),
+      (1, 'Smirnoff Vodka 750ml', 18, 55000, 82000, 1),
+      (1, 'Ginebra Gordon''s 750ml', 15, 48000, 72000, 1),
+      (1, 'Brandy Terry 750ml', 22, 32000, 48000, 1),
+      (1, 'Anís Núñez 750ml', 28, 28000, 42000, 1),
+      -- CERVEZAS
+      (2, 'Cerveza Águila Lata 330ml', 200, 2500, 4500, 1),
+      (2, 'Cerveza Poker Lata 330ml', 150, 2500, 4500, 1),
+      (2, 'Cerveza Corona Botella 355ml', 80, 5000, 8000, 1),
+      (2, 'Cerveza Heineken Lata 330ml', 60, 4000, 7000, 1),
+      (2, 'Cerveza Club Colombia Dorada', 45, 4500, 7500, 1),
+      (2, 'Cerveza Budweiser Lata', 55, 3500, 6000, 1),
+      (2, 'Cerveza Pilsen Lata', 65, 2400, 4200, 1),
+      (2, 'Cerveza Costeña Lata', 40, 2300, 4000, 1),
+      -- CIGARRILLOS
+      (3, 'Cigarrillo Marlboro Rojo', 100, 4500, 7000, 1),
+      (3, 'Cigarrillo Marlboro Gold', 90, 4500, 7000, 1),
+      (3, 'Cigarrillo Lucky Strike', 80, 4200, 6500, 1),
+      (3, 'Cigarrillo Camel', 70, 4800, 7500, 1),
+      (3, 'Cigarrillo Belmont', 60, 5200, 8000, 1),
+      (3, 'Cigarrillo Pielroja', 85, 3800, 6000, 1),
+      (3, 'Cigarrillo Mustang', 75, 4000, 6200, 1),
+      (3, 'Cigarrillo Derby', 95, 3500, 5500, 1),
+      -- DULCERÍA
+      (4, 'Papas Margarita Natural', 60, 3200, 5500, 1),
+      (4, 'Papas Margarita Pollo', 45, 3200, 5500, 1),
+      (4, 'Platanitos Verdes', 55, 2800, 4800, 1),
+      (4, 'Mani Japonés', 65, 2500, 4200, 1),
+      (4, 'Choclitos', 40, 3000, 5000, 1),
+      (4, 'De Todito', 35, 3500, 5800, 1),
+      (4, 'Chitos', 50, 3200, 5200, 1),
+      (4, 'Gomitas Trululú', 75, 1800, 3000, 1),
+      (4, 'Chocolate Jet', 60, 1500, 2500, 1),
+      (4, 'Galletas Festival', 80, 1200, 2000, 1),
+      (4, 'Cheetos', 45, 3400, 5600, 1),
+      (4, 'Tostacos', 30, 3800, 6200, 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // PROVEEDORES
+    await pool.query(`
+      INSERT INTO proveedores (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) VALUES
+      ('Bavaria S.A.', 'NIT', 860000123, 'Juan Distribuidor', '6012345678', 'ventas@bavaria.com.co', 'Autopista Norte #125-80, Bogotá', 1),
+      ('Distribuidora La Rebaja', 'NIT', 860000789, 'Carlos Suministros', '6034567890', 'compras@larebaja.com.co', 'Avenida 68 #15-40, Cali', 1),
+      ('Licores de Colombia S.A.', 'NIT', 860000456, 'Maria Proveedora', '6023456789', 'pedidos@licorescolombia.com.co', 'Calle 100 #25-50, Medellín', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // CLIENTES
+    await pool.query(`
+      INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) VALUES
+      ('Ana Maria López', 'CC', '1023456789', '3001234567', 'Carrera 80 #25-35, Medellín', 1),
+      ('Carlos Andrés Rodríguez', 'CC', '5234567890', '3102345678', 'Calle 50 #45-20, Bogotá', 1),
+      ('Laura Valentina García', 'CC', '2345678901', '3203456789', 'Avenida 68 #15-40, Cali', 1),
+      ('Javier Antonio Gómez', 'CE', 'AL12345678', '3154567890', 'Transversal 25 #30-15, Barranquilla', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // COMPRAS
+    await pool.query(`
+      INSERT INTO compras (id_proveedor, fecha, total, numero_factura, estado) VALUES
+      (1, '2024-01-15 08:30:00', 3975000.00, 'FAC-BAV-2024-001', 1),
+      (3, '2024-01-16 10:15:00', 1209500.00, 'FAC-LIC-2024-002', 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // DETALLE_COMPRAS
+    await pool.query(`
+      INSERT INTO detalle_compras (id_compra, id_producto, cantidad, precio, subtotal) VALUES
+      (1, 1, 50, 35000, 1750000),
+      (1, 2, 30, 45000, 1350000),
+      (1, 13, 200, 2500, 500000),
+      (1, 14, 150, 2500, 375000),
+      (2, 19, 100, 4500, 450000),
+      (2, 20, 90, 4500, 405000),
+      (2, 27, 60, 3200, 192000),
+      (2, 29, 65, 2500, 162500)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // VENTAS
+    await pool.query(`
+      INSERT INTO ventas (id_cliente, fecha, total, estado) VALUES
+      (1, '2024-01-16 20:15:00', 71500.00, 1),
+      (2, '2024-01-16 21:30:00', 58400.00, 1),
+      (3, '2024-01-16 22:45:00', 191300.00, 1)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // DETALLE_VENTAS
+    await pool.query(`
+      INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) VALUES
+      (1, 1, 1, 52000, 52000),
+      (1, 19, 2, 7000, 14000),
+      (1, 27, 1, 5500, 5500),
+      (2, 13, 6, 4500, 27000),
+      (2, 14, 4, 4500, 18000),
+      (2, 29, 2, 4200, 8400),
+      (2, 30, 1, 5000, 5000),
+      (3, 4, 1, 180000, 180000),
+      (3, 21, 1, 6500, 6500),
+      (3, 28, 1, 4800, 4800)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    console.log('✅ Todas las tablas y datos creados exitosamente!');
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>✅ Base de Datos Creada - StockBar</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 40px; background: #f0f8f0; }
+          .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          h1 { color: #27ae60; text-align: center; }
+          .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 5px; margin: 20px 0; }
+          .menu { text-align: center; margin: 30px 0; }
+          .menu a { display: inline-block; margin: 5px; padding: 10px 20px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>✅ BASE DE DATOS CREADA EXITOSAMENTE</h1>
+          <div class="success">
+            <h3>¡Todas las tablas y datos han sido creados!</h3>
+            <p>Se crearon 13 tablas con datos de ejemplo para StockBar</p>
+          </div>
+          
+          <div class="menu">
+            <a href="/api/productos">📦 Ver Productos</a>
+            <a href="/api/clientes">👥 Ver Clientes</a>
+            <a href="/api/ventas">💰 Ver Ventas</a>
+            <a href="/api/categorias">📋 Ver Categorías</a>
+            <a href="/api/usuarios">👤 Ver Usuarios</a>
+            <a href="/">🏠 Ir al Inicio</a>
+          </div>
+
+          <h3>Tablas creadas:</h3>
+          <ul>
+            <li>📊 roles, permisos, ver_detalle_rol</li>
+            <li>👤 usuarios</li>
+            <li>📦 categorias, productos</li>
+            <li>🏢 proveedores, compras, detalle_compras</li>
+            <li>👥 clientes, ventas, detalle_ventas</li>
+          </ul>
+        </div>
+      </body>
+      </html>
+    `);
+
+  } catch (error) {
+    console.error('❌ Error:', error);
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Error - StockBar</title></head>
+      <body style="font-family: Arial; margin: 40px;">
+        <h1 style="color: #e74c3c;">❌ Error creando base de datos</h1>
+        <p><strong>Error:</strong> ${error.message}</p>
+        <a href="/">Volver al inicio</a>
+      </body>
+      </html>
+    `);
+  }
 });
 
 // ==================== ENDPOINTS PARA TODAS LAS TABLAS ====================
@@ -667,4 +1034,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 Servidor API StockBar - CONECTADO A POSTGRESQL EN RENDER');
   console.log('📡 Puerto: ' + PORT);
   console.log('🌐 URL: https://api-stockbar.onrender.com');
+  console.log('⚡ Para crear la base de datos, visita: /api/create-all-tables');
 });
