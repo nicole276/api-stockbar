@@ -287,7 +287,7 @@ app.get('/', (req, res) => {
                         <h3>Detalle Roles</h3>
                         <p>Asignación permisos</p>
                     </a>
-                    <a href="/api/create-all-tables" class="menu-item" style="background: #e74c3c; color: white;">
+                    <a href="/api/create-all-tables" class="menu-item">
                         <div class="icon">⚡</div>
                         <h3>Crear Base de Datos</h3>
                         <p>Inicializar tablas y datos</p>
