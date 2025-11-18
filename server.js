@@ -536,43 +536,21 @@ app.get('/api/create-all-tables', async (req, res) => {
       (1, 'Whisky Old Parr 750ml', 15, 120000, 180000, 1),
       (1, 'Whisky Buchanan''s 750ml', 12, 95000, 140000, 1),
       (1, 'Tequila José Cuervo 750ml', 10, 85000, 125000, 1),
-      (1, 'Vino Gato Negro Tinto', 40, 25000, 38000, 1),
-      (1, 'Vino Casillero del Diablo', 20, 45000, 68000, 1),
-      (1, 'Smirnoff Vodka 750ml', 18, 55000, 82000, 1),
-      (1, 'Ginebra Gordon''s 750ml', 15, 48000, 72000, 1),
-      (1, 'Brandy Terry 750ml', 22, 32000, 48000, 1),
-      (1, 'Anís Núñez 750ml', 28, 28000, 42000, 1),
       -- CERVEZAS
       (2, 'Cerveza Águila Lata 330ml', 200, 2500, 4500, 1),
       (2, 'Cerveza Poker Lata 330ml', 150, 2500, 4500, 1),
       (2, 'Cerveza Corona Botella 355ml', 80, 5000, 8000, 1),
       (2, 'Cerveza Heineken Lata 330ml', 60, 4000, 7000, 1),
-      (2, 'Cerveza Club Colombia Dorada', 45, 4500, 7500, 1),
-      (2, 'Cerveza Budweiser Lata', 55, 3500, 6000, 1),
-      (2, 'Cerveza Pilsen Lata', 65, 2400, 4200, 1),
-      (2, 'Cerveza Costeña Lata', 40, 2300, 4000, 1),
       -- CIGARRILLOS
       (3, 'Cigarrillo Marlboro Rojo', 100, 4500, 7000, 1),
       (3, 'Cigarrillo Marlboro Gold', 90, 4500, 7000, 1),
       (3, 'Cigarrillo Lucky Strike', 80, 4200, 6500, 1),
       (3, 'Cigarrillo Camel', 70, 4800, 7500, 1),
-      (3, 'Cigarrillo Belmont', 60, 5200, 8000, 1),
-      (3, 'Cigarrillo Pielroja', 85, 3800, 6000, 1),
-      (3, 'Cigarrillo Mustang', 75, 4000, 6200, 1),
-      (3, 'Cigarrillo Derby', 95, 3500, 5500, 1),
       -- DULCERÍA
       (4, 'Papas Margarita Natural', 60, 3200, 5500, 1),
       (4, 'Papas Margarita Pollo', 45, 3200, 5500, 1),
       (4, 'Platanitos Verdes', 55, 2800, 4800, 1),
       (4, 'Mani Japonés', 65, 2500, 4200, 1),
-      (4, 'Choclitos', 40, 3000, 5000, 1),
-      (4, 'De Todito', 35, 3500, 5800, 1),
-      (4, 'Chitos', 50, 3200, 5200, 1),
-      (4, 'Gomitas Trululú', 75, 1800, 3000, 1),
-      (4, 'Chocolate Jet', 60, 1500, 2500, 1),
-      (4, 'Galletas Festival', 80, 1200, 2000, 1),
-      (4, 'Cheetos', 45, 3400, 5600, 1),
-      (4, 'Tostacos', 30, 3800, 6200, 1)
       ON CONFLICT DO NOTHING;
     `);
 
