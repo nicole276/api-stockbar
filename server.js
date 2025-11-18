@@ -18,8 +18,8 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Función para generar HTML con estilos
-const generarHTML = (titulo, datos, columnas) => {
+// Función para generar HTML con estilos y botones de acción
+const generarHTML = (titulo, datos, columnas, tipo) => {
   return `
     <!DOCTYPE html>
     <html>
@@ -100,6 +100,35 @@ const generarHTML = (titulo, datos, columnas) => {
                 font-weight: bold; 
                 margin-top: 10px;
             }
+            .btn-agregar { 
+                background: #27ae60; 
+                color: white; 
+                padding: 10px 20px; 
+                text-decoration: none; 
+                border-radius: 5px; 
+                display: inline-block; 
+                margin-bottom: 20px;
+            }
+            .btn-editar { 
+                background: #f39c12; 
+                color: white; 
+                padding: 5px 10px; 
+                text-decoration: none; 
+                border-radius: 3px; 
+                font-size: 0.8em;
+                margin-right: 5px;
+            }
+            .btn-eliminar { 
+                background: #e74c3c; 
+                color: white; 
+                padding: 5px 10px; 
+                text-decoration: none; 
+                border-radius: 3px; 
+                font-size: 0.8em;
+            }
+            .acciones {
+                text-align: center;
+            }
         </style>
     </head>
     <body>
@@ -121,21 +150,29 @@ const generarHTML = (titulo, datos, columnas) => {
                 <a href="/api/detalle-roles">Detalle Roles</a>
                 <a href="/api/create-all-tables">⚡ Crear BD</a>
             </div>
+            
+            <a href="/api/agregar-${tipo}" class="btn-agregar">➕ Agregar ${titulo}</a>
+            
             <table>
                 <thead>
                     <tr>
                         ${columnas.map(col => `<th>${col}</th>`).join('')}
+                        <th>Acciones</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${datos.map(fila => `
+                    ${datos.map((fila, index) => `
                         <tr>
-                            ${fila.map((celda, index) => `
+                            ${fila.map((celda, cellIndex) => `
                                 <td class="${typeof celda === 'number' && celda > 10000 ? 'precio' : ''} 
-                                          ${index === 3 && celda < 10 ? 'stock-bajo' : 'stock'}">
+                                          ${cellIndex === 3 && celda < 10 ? 'stock-bajo' : 'stock'}">
                                     ${typeof celda === 'number' && celda > 1000 ? `$${celda.toLocaleString()}` : celda}
                                 </td>
                             `).join('')}
+                            <td class="acciones">
+                                <a href="/api/editar-${tipo}/${fila[0]}" class="btn-editar">✏️ Editar</a>
+                                <a href="/api/eliminar-${tipo}/${fila[0]}" class="btn-eliminar" onclick="return confirm('¿Estás seguro de eliminar este registro?')">🗑️ Eliminar</a>
+                            </td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -248,7 +285,7 @@ app.get('/', (req, res) => {
                         <p>Historial de ventas</p>
                     </a>
                     <a href="/api/detalle-ventas" class="menu-item">
-                        <div class="icon">📋</div>
+                        <div class="icon">🧾</div>
                         <h3>Detalle Ventas</h3>
                         <p>Detalles de ventas</p>
                     </a>
@@ -667,7 +704,440 @@ app.get('/api/create-all-tables', async (req, res) => {
   }
 });
 
-// ==================== ENDPOINTS PARA TODAS LAS TABLAS ====================
+// ==================== ENDPOINTS CRUD - CREAR, EDITAR, ELIMINAR ====================
+
+// 📦 PRODUCTOS - CRUD
+app.post('/api/productos', async (req, res) => {
+  try {
+    const { id_categoria, nombre, stock, precio_compra, precio_venta, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [id_categoria, nombre, stock, precio_compra, precio_venta, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/productos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { id_categoria, nombre, stock, precio_compra, precio_venta, estado } = req.body;
+    const result = await pool.query(
+      'UPDATE productos SET id_categoria=$1, nombre=$2, stock=$3, precio_compra=$4, precio_venta=$5, estado=$6 WHERE id_producto=$7 RETURNING *',
+      [id_categoria, nombre, stock, precio_compra, precio_venta, estado, id]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/productos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM productos WHERE id_producto=$1', [id]);
+    res.json({ success: true, message: 'Producto eliminado' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 👥 CLIENTES - CRUD
+app.post('/api/clientes', async (req, res) => {
+  try {
+    const { nombre, tipo_documento, documento, telefono, direccion, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [nombre, tipo_documento, documento, telefono, direccion, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/clientes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, tipo_documento, documento, telefono, direccion, estado } = req.body;
+    const result = await pool.query(
+      'UPDATE clientes SET nombre=$1, tipo_documento=$2, documento=$3, telefono=$4, direccion=$5, estado=$6 WHERE id_cliente=$7 RETURNING *',
+      [nombre, tipo_documento, documento, telefono, direccion, estado, id]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/clientes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM clientes WHERE id_cliente=$1', [id]);
+    res.json({ success: true, message: 'Cliente eliminado' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 📋 CATEGORÍAS - CRUD
+app.post('/api/categorias', async (req, res) => {
+  try {
+    const { nombre, descripcion, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO categorias (nombre, descripcion, estado) VALUES ($1, $2, $3) RETURNING *',
+      [nombre, descripcion, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/categorias/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, descripcion, estado } = req.body;
+    const result = await pool.query(
+      'UPDATE categorias SET nombre=$1, descripcion=$2, estado=$3 WHERE id_categoria=$4 RETURNING *',
+      [nombre, descripcion, estado, id]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/categorias/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM categorias WHERE id_categoria=$1', [id]);
+    res.json({ success: true, message: 'Categoría eliminada' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 👤 USUARIOS - CRUD
+app.post('/api/usuarios', async (req, res) => {
+  try {
+    const { id_rol, nombre_completo, email, usuario, contraseña, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [id_rol, nombre_completo, email, usuario, contraseña, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { id_rol, nombre_completo, email, usuario, contraseña, estado } = req.body;
+    const result = await pool.query(
+      'UPDATE usuarios SET id_rol=$1, nombre_completo=$2, email=$3, usuario=$4, contraseña=$5, estado=$6 WHERE id_usuario=$7 RETURNING *',
+      [id_rol, nombre_completo, email, usuario, contraseña, estado, id]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM usuarios WHERE id_usuario=$1', [id]);
+    res.json({ success: true, message: 'Usuario eliminado' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 🏢 PROVEEDORES - CRUD
+app.post('/api/proveedores', async (req, res) => {
+  try {
+    const { nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO proveedores (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/proveedores/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado } = req.body;
+    const result = await pool.query(
+      'UPDATE proveedores SET nombre_razon_social=$1, tipo_documento=$2, documento=$3, contacto=$4, telefono=$5, email=$6, direccion=$7, estado=$8 WHERE id_proveedor=$9 RETURNING *',
+      [nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado, id]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/proveedores/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM proveedores WHERE id_proveedor=$1', [id]);
+    res.json({ success: true, message: 'Proveedor eliminado' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 💰 VENTAS - CRUD
+app.post('/api/ventas', async (req, res) => {
+  try {
+    const { id_cliente, fecha, total, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO ventas (id_cliente, fecha, total, estado) VALUES ($1, $2, $3, $4) RETURNING *',
+      [id_cliente, fecha || new Date(), total, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 📥 COMPRAS - CRUD
+app.post('/api/compras', async (req, res) => {
+  try {
+    const { id_proveedor, fecha, total, numero_factura, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO compras (id_proveedor, fecha, total, numero_factura, estado) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [id_proveedor, fecha || new Date(), total, numero_factura, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 🔐 ROLES - CRUD
+app.post('/api/roles', async (req, res) => {
+  try {
+    const { nombre_rol, descripcion, estado } = req.body;
+    const result = await pool.query(
+      'INSERT INTO roles (nombre_rol, descripcion, estado) VALUES ($1, $2, $3) RETURNING *',
+      [nombre_rol, descripcion, estado || 1]
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== FORMULARIOS PARA AGREGAR DATOS ====================
+
+// Formulario para agregar producto
+app.get('/api/agregar-producto', async (req, res) => {
+  try {
+    const categorias = await pool.query('SELECT * FROM categorias WHERE estado = 1');
+    
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Agregar Producto - StockBar</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+          .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          h1 { color: #2c3e50; text-align: center; }
+          .form-group { margin-bottom: 20px; }
+          label { display: block; margin-bottom: 5px; font-weight: bold; }
+          input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+          button { background: #3498db; color: white; padding: 12px 30px; border: none; border-radius: 5px; cursor: pointer; }
+          .nav { text-align: center; margin: 20px 0; }
+          .nav a { display: inline-block; margin: 5px; padding: 10px 20px; background: #95a5a6; color: white; text-decoration: none; border-radius: 5px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>📦 Agregar Producto</h1>
+          <div class="nav">
+            <a href="/api/productos">↩️ Volver a Productos</a>
+            <a href="/">🏠 Inicio</a>
+          </div>
+          
+          <form id="productoForm">
+            <div class="form-group">
+              <label>Nombre del Producto:</label>
+              <input type="text" name="nombre" required>
+            </div>
+            
+            <div class="form-group">
+              <label>Categoría:</label>
+              <select name="id_categoria" required>
+                <option value="">Seleccionar categoría</option>
+                ${categorias.rows.map(cat => `<option value="${cat.id_categoria}">${cat.nombre}</option>`).join('')}
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label>Stock:</label>
+              <input type="number" name="stock" value="0" required>
+            </div>
+            
+            <div class="form-group">
+              <label>Precio Compra:</label>
+              <input type="number" step="0.01" name="precio_compra" required>
+            </div>
+            
+            <div class="form-group">
+              <label>Precio Venta:</label>
+              <input type="number" step="0.01" name="precio_venta" required>
+            </div>
+            
+            <button type="submit">➕ Agregar Producto</button>
+          </form>
+          
+          <div id="resultado" style="margin-top: 20px;"></div>
+        </div>
+
+        <script>
+          document.getElementById('productoForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData);
+            
+            try {
+              const response = await fetch('/api/productos', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+              });
+              
+              const result = await response.json();
+              const resultadoDiv = document.getElementById('resultado');
+              
+              if (result.success) {
+                resultadoDiv.innerHTML = '<div style="color: green; background: #d4edda; padding: 10px; border-radius: 5px;">✅ Producto agregado exitosamente!</div>';
+                e.target.reset();
+              } else {
+                resultadoDiv.innerHTML = '<div style="color: red; background: #f8d7da; padding: 10px; border-radius: 5px;">❌ Error: ' + result.error + '</div>';
+              }
+            } catch (error) {
+              document.getElementById('resultado').innerHTML = '<div style="color: red; background: #f8d7da; padding: 10px; border-radius: 5px;">❌ Error de conexión</div>';
+            }
+          });
+        </script>
+      </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// Formulario para agregar cliente
+app.get('/api/agregar-cliente', (req, res) => {
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Agregar Cliente - StockBar</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        button { background: #3498db; color: white; padding: 12px 30px; border: none; border-radius: 5px; cursor: pointer; }
+        .nav { text-align: center; margin: 20px 0; }
+        .nav a { display: inline-block; margin: 5px; padding: 10px 20px; background: #95a5a6; color: white; text-decoration: none; border-radius: 5px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>👥 Agregar Cliente</h1>
+        <div class="nav">
+          <a href="/api/clientes">↩️ Volver a Clientes</a>
+          <a href="/">🏠 Inicio</a>
+        </div>
+        
+        <form id="clienteForm">
+          <div class="form-group">
+            <label>Nombre:</label>
+            <input type="text" name="nombre" required>
+          </div>
+          
+          <div class="form-group">
+            <label>Tipo Documento:</label>
+            <select name="tipo_documento" required>
+              <option value="CC">Cédula de Ciudadanía</option>
+              <option value="CE">Cédula de Extranjería</option>
+              <option value="NIT">NIT</option>
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label>Documento:</label>
+            <input type="text" name="documento" required>
+          </div>
+          
+          <div class="form-group">
+            <label>Teléfono:</label>
+            <input type="text" name="telefono">
+          </div>
+          
+          <div class="form-group">
+            <label>Dirección:</label>
+            <input type="text" name="direccion">
+          </div>
+          
+          <button type="submit">➕ Agregar Cliente</button>
+        </form>
+        
+        <div id="resultado" style="margin-top: 20px;"></div>
+      </div>
+
+      <script>
+        document.getElementById('clienteForm').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const formData = new FormData(e.target);
+          const data = Object.fromEntries(formData);
+          
+          try {
+            const response = await fetch('/api/clientes', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(data)
+            });
+            
+            const result = await response.json();
+            const resultadoDiv = document.getElementById('resultado');
+            
+            if (result.success) {
+              resultadoDiv.innerHTML = '<div style="color: green; background: #d4edda; padding: 10px; border-radius: 5px;">✅ Cliente agregado exitosamente!</div>';
+              e.target.reset();
+            } else {
+              resultadoDiv.innerHTML = '<div style="color: red; background: #f8d7da; padding: 10px; border-radius: 5px;">❌ Error: ' + result.error + '</div>';
+            }
+          } catch (error) {
+            document.getElementById('resultado').innerHTML = '<div style="color: red; background: #f8d7da; padding: 10px; border-radius: 5px;">❌ Error de conexión</div>';
+          }
+        });
+      </script>
+    </body>
+    </html>
+  `;
+  res.send(html);
+});
+
+// ==================== ENDPOINTS PARA TODAS LAS TABLAS (ACTUALIZADOS CON BOTONES) ====================
 
 // 1. PRODUCTOS
 app.get('/api/productos', async (req, res) => {
@@ -692,7 +1162,7 @@ app.get('/api/productos', async (req, res) => {
       row.estado
     ]);
     
-    res.send(generarHTML('Productos - Licorería', datos, columnas));
+    res.send(generarHTML('Productos - Licorería', datos, columnas, 'producto'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -713,7 +1183,7 @@ app.get('/api/clientes', async (req, res) => {
       row.estado === 1 ? 'Activo' : 'Inactivo'
     ]);
     
-    res.send(generarHTML('Clientes', datos, columnas));
+    res.send(generarHTML('Clientes', datos, columnas, 'cliente'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -732,7 +1202,7 @@ app.get('/api/categorias', async (req, res) => {
       row.estado === 1 ? 'Activa' : 'Inactiva'
     ]);
     
-    res.send(generarHTML('Categorías', datos, columnas));
+    res.send(generarHTML('Categorías', datos, columnas, 'categoria'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -760,7 +1230,7 @@ app.get('/api/ventas', async (req, res) => {
       row.estado
     ]);
     
-    res.send(generarHTML('Ventas', datos, columnas));
+    res.send(generarHTML('Ventas', datos, columnas, 'venta'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -792,7 +1262,7 @@ app.get('/api/detalle-ventas', async (req, res) => {
       row.total_venta
     ]);
     
-    res.send(generarHTML('Detalle de Ventas', datos, columnas));
+    res.send(generarHTML('Detalle de Ventas', datos, columnas, 'detalle-venta'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -821,7 +1291,7 @@ app.get('/api/compras', async (req, res) => {
       row.estado
     ]);
     
-    res.send(generarHTML('Compras a Proveedores', datos, columnas));
+    res.send(generarHTML('Compras a Proveedores', datos, columnas, 'compra'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -852,7 +1322,7 @@ app.get('/api/detalle-compras', async (req, res) => {
       row.numero_factura
     ]);
     
-    res.send(generarHTML('Detalle de Compras', datos, columnas));
+    res.send(generarHTML('Detalle de Compras', datos, columnas, 'detalle-compra'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -874,7 +1344,7 @@ app.get('/api/proveedores', async (req, res) => {
       row.estado === 1 ? 'Activo' : 'Inactivo'
     ]);
     
-    res.send(generarHTML('Proveedores', datos, columnas));
+    res.send(generarHTML('Proveedores', datos, columnas, 'proveedor'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -902,7 +1372,7 @@ app.get('/api/usuarios', async (req, res) => {
       row.estado
     ]);
     
-    res.send(generarHTML('Usuarios del Sistema', datos, columnas));
+    res.send(generarHTML('Usuarios del Sistema', datos, columnas, 'usuario'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -921,7 +1391,7 @@ app.get('/api/roles', async (req, res) => {
       row.estado === 1 ? 'Activo' : 'Inactivo'
     ]);
     
-    res.send(generarHTML('Roles del Sistema', datos, columnas));
+    res.send(generarHTML('Roles del Sistema', datos, columnas, 'rol'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -944,7 +1414,7 @@ app.get('/api/permisos', async (req, res) => {
       row.id_rol
     ]);
     
-    res.send(generarHTML('Permisos del Sistema', datos, columnas));
+    res.send(generarHTML('Permisos del Sistema', datos, columnas, 'permiso'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -969,7 +1439,7 @@ app.get('/api/detalle-roles', async (req, res) => {
       row.id_permiso
     ]);
     
-    res.send(generarHTML('Detalle de Roles y Permisos', datos, columnas));
+    res.send(generarHTML('Detalle de Roles y Permisos', datos, columnas, 'detalle-rol'));
   } catch (error) {
     res.status(500).send(`Error: ${error.message}`);
   }
@@ -1029,10 +1499,35 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
+// ==================== ENDPOINTS PARA ELIMINAR ====================
+
+// Eliminar producto
+app.get('/api/eliminar-producto/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM productos WHERE id_producto=$1', [id]);
+    res.redirect('/api/productos');
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
+// Eliminar cliente
+app.get('/api/eliminar-cliente/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM clientes WHERE id_cliente=$1', [id]);
+    res.redirect('/api/clientes');
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 Servidor API StockBar - CONECTADO A POSTGRESQL EN RENDER');
   console.log('📡 Puerto: ' + PORT);
   console.log('🌐 URL: https://api-stockbar.onrender.com');
   console.log('⚡ Para crear la base de datos, visita: /api/create-all-tables');
+  console.log('✅ CRUD Habilitado: Agregar, Editar, Eliminar datos');
 });
