@@ -267,6 +267,364 @@ app.get('/api/create-all-tables', async (req, res) => {
   }
 });
 
+// ==================== ENDPOINTS CRUD - VER_DETALLE_ROL ====================
+
+// GET - Obtener todos los detalles de rol
+app.get('/api/ver-detalle-rol', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT vdr.*, r.nombre_rol, p.id_permiso
+      FROM ver_detalle_rol vdr 
+      LEFT JOIN roles r ON vdr.id_rol = r.id_rol 
+      LEFT JOIN permisos p ON vdr.id_permiso = p.id_permiso 
+      ORDER BY vdr.id_detalle
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST - Crear nuevo detalle de rol
+app.post('/api/ver-detalle-rol', async (req, res) => {
+  try {
+    const { id_rol, id_permiso } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO ver_detalle_rol (id_rol, id_permiso) 
+       VALUES ($1, $2) RETURNING *`,
+      [id_rol, id_permiso]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Detalle de rol creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - DETALLE_COMPRAS ====================
+
+// GET - Obtener todos los detalles de compra
+app.get('/api/detalle-compras', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT dc.*, c.numero_factura, p.nombre as producto_nombre, 
+             pr.nombre_razon_social as proveedor_nombre
+      FROM detalle_compras dc 
+      LEFT JOIN compras c ON dc.id_compra = c.id_compra 
+      LEFT JOIN productos p ON dc.id_producto = p.id_producto 
+      LEFT JOIN proveedores pr ON c.id_proveedor = pr.id_proveedor 
+      ORDER BY dc.id_det_compra DESC
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET - Obtener detalles de compra por ID de compra
+app.get('/api/detalle-compras/compra/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(`
+      SELECT dc.*, p.nombre as producto_nombre, p.precio_compra, p.precio_venta
+      FROM detalle_compras dc 
+      LEFT JOIN productos p ON dc.id_producto = p.id_producto 
+      WHERE dc.id_compra = $1
+    `, [id]);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST - Crear nuevo detalle de compra
+app.post('/api/detalle-compras', async (req, res) => {
+  try {
+    const { id_compra, id_producto, cantidad, precio, subtotal } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO detalle_compras (id_compra, id_producto, cantidad, precio, subtotal) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [id_compra, id_producto, cantidad, precio, subtotal]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Detalle de compra creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - DETALLE_VENTAS ====================
+
+// GET - Obtener todos los detalles de venta
+app.get('/api/detalle-ventas', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT dv.*, v.fecha as venta_fecha, c.nombre as cliente_nombre, 
+             p.nombre as producto_nombre, p.precio_venta
+      FROM detalle_ventas dv 
+      LEFT JOIN ventas v ON dv.id_venta = v.id_venta 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      LEFT JOIN productos p ON dv.id_producto = p.id_producto 
+      ORDER BY dv.id_det_venta DESC
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET - Obtener detalles de venta por ID de venta
+app.get('/api/detalle-ventas/venta/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(`
+      SELECT dv.*, p.nombre as producto_nombre, p.precio_venta
+      FROM detalle_ventas dv 
+      LEFT JOIN productos p ON dv.id_producto = p.id_producto 
+      WHERE dv.id_venta = $1
+    `, [id]);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST - Crear nuevo detalle de venta
+app.post('/api/detalle-ventas', async (req, res) => {
+  try {
+    const { id_venta, id_producto, cantidad, precio, subtotal } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) 
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [id_venta, id_producto, cantidad, precio, subtotal]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Detalle de venta creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS PARA VENTAS COMPLETAS ====================
+
+// POST - Crear venta completa con productos
+app.post('/api/ventas-completas', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id_cliente, total, productos } = req.body;
+    
+    // 1. Crear la venta principal
+    const ventaResult = await client.query(
+      `INSERT INTO ventas (id_cliente, fecha, total, estado) 
+       VALUES ($1, NOW(), $2, $3) RETURNING *`,
+      [id_cliente, total, 1]
+    );
+    
+    const ventaId = ventaResult.rows[0].id_venta;
+    
+    // 2. Crear los detalles de venta (productos)
+    for (const producto of productos) {
+      await client.query(
+        `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [ventaId, producto.id_producto, producto.cantidad, producto.precio_unitario, producto.cantidad * producto.precio_unitario]
+      );
+      
+      // 3. Actualizar stock de productos
+      await client.query(
+        'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
+        [producto.cantidad, producto.id_producto]
+      );
+    }
+    
+    await client.query('COMMIT');
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Venta registrada exitosamente con productos',
+      data: {
+        venta: ventaResult.rows[0],
+        productos_vendidos: productos.length
+      }
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET - Obtener ventas completas con detalles
+app.get('/api/ventas-completas', async (req, res) => {
+  try {
+    // Obtener ventas principales
+    const ventasResult = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre, c.telefono as cliente_telefono
+      FROM ventas v 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      ORDER BY v.fecha DESC
+    `);
+    
+    const ventas = ventasResult.rows;
+    
+    // Para cada venta, obtener sus detalles
+    for (let venta of ventas) {
+      const detallesResult = await pool.query(`
+        SELECT dv.*, p.nombre as producto_nombre, p.precio_venta
+        FROM detalle_ventas dv 
+        LEFT JOIN productos p ON dv.id_producto = p.id_producto 
+        WHERE dv.id_venta = $1
+      `, [venta.id_venta]);
+      
+      venta.productos = detallesResult.rows;
+    }
+    
+    res.json({
+      success: true,
+      data: ventas,
+      total: ventas.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS PARA COMPRAS COMPLETAS ====================
+
+// POST - Crear compra completa con productos
+app.post('/api/compras-completas', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id_proveedor, total, numero_factura, productos } = req.body;
+    
+    // 1. Crear la compra principal
+    const compraResult = await client.query(
+      `INSERT INTO compras (id_proveedor, fecha, total, numero_factura, estado) 
+       VALUES ($1, NOW(), $2, $3, $4) RETURNING *`,
+      [id_proveedor, total, numero_factura, 1]
+    );
+    
+    const compraId = compraResult.rows[0].id_compra;
+    
+    // 2. Crear los detalles de compra (productos)
+    for (const producto of productos) {
+      await client.query(
+        `INSERT INTO detalle_compras (id_compra, id_producto, cantidad, precio, subtotal) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [compraId, producto.id_producto, producto.cantidad, producto.precio, producto.cantidad * producto.precio]
+      );
+      
+      // 3. Actualizar stock de productos
+      await client.query(
+        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
+        [producto.cantidad, producto.id_producto]
+      );
+    }
+    
+    await client.query('COMMIT');
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Compra registrada exitosamente con productos',
+      data: {
+        compra: compraResult.rows[0],
+        productos_comprados: productos.length
+      }
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET - Obtener compras completas con detalles
+app.get('/api/compras-completas', async (req, res) => {
+  try {
+    // Obtener compras principales
+    const comprasResult = await pool.query(`
+      SELECT c.*, p.nombre_razon_social as proveedor_nombre, p.contacto as proveedor_contacto
+      FROM compras c 
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor 
+      ORDER BY c.fecha DESC
+    `);
+    
+    const compras = comprasResult.rows;
+    
+    // Para cada compra, obtener sus detalles
+    for (let compra of compras) {
+      const detallesResult = await pool.query(`
+        SELECT dc.*, pr.nombre as producto_nombre, pr.precio_compra, pr.precio_venta
+        FROM detalle_compras dc 
+        LEFT JOIN productos pr ON dc.id_producto = pr.id_producto 
+        WHERE dc.id_compra = $1
+      `, [compra.id_compra]);
+      
+      compra.productos = detallesResult.rows;
+    }
+    
+    res.json({
+      success: true,
+      data: compras,
+      total: compras.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ==================== ENDPOINTS CRUD - PRODUCTOS ====================
 
 // GET - Obtener todos los productos
@@ -740,10 +1098,30 @@ app.get('/api/status', async (req, res) => {
         },
         ventas: {
           GET: '/api/ventas',
-          POST: '/api/ventas'
+          POST: '/api/ventas',
+          'GET con detalles': '/api/ventas-completas',
+          'POST con productos': '/api/ventas-completas',
+          'GET detalles venta': '/api/detalle-ventas'
         },
         compras: {
-          GET: '/api/compras'
+          GET: '/api/compras',
+          'GET con detalles': '/api/compras-completas',
+          'POST con productos': '/api/compras-completas',
+          'GET detalles compra': '/api/detalle-compras'
+        },
+        'detalle-ventas': {
+          GET: '/api/detalle-ventas',
+          POST: '/api/detalle-ventas',
+          'GET por venta': '/api/detalle-ventas/venta/:id'
+        },
+        'detalle-compras': {
+          GET: '/api/detalle-compras',
+          POST: '/api/detalle-compras',
+          'GET por compra': '/api/detalle-compras/compra/:id'
+        },
+        'ver-detalle-rol': {
+          GET: '/api/ver-detalle-rol',
+          POST: '/api/ver-detalle-rol'
         },
         setup: {
           'Crear BD': '/api/create-all-tables'
@@ -795,14 +1173,26 @@ app.use('*', (req, res) => {
       'POST /api/proveedores',
       'GET /api/ventas',
       'POST /api/ventas',
-      'GET /api/compras'
+      'GET /api/ventas-completas',
+      'POST /api/ventas-completas',
+      'GET /api/compras',
+      'GET /api/compras-completas',
+      'POST /api/compras-completas',
+      'GET /api/detalle-ventas',
+      'POST /api/detalle-ventas',
+      'GET /api/detalle-ventas/venta/:id',
+      'GET /api/detalle-compras',
+      'POST /api/detalle-compras',
+      'GET /api/detalle-compras/compra/:id',
+      'GET /api/ver-detalle-rol',
+      'POST /api/ver-detalle-rol'
     ]
   });
 });
 
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('🚀 Servidor API StockBar - SOLO BACKEND');
+  console.log('🚀 Servidor API StockBar - COMPLETO');
   console.log('📡 Puerto: ' + PORT);
   console.log('🌐 URL: https://api-stockbar.onrender.com');
   console.log('📚 Documentación: /api/status');
