@@ -427,6 +427,9 @@ app.post('/api/clientes', async (req, res) => {
 });
 
 // ==================== ENDPOINTS CRUD - VENTAS ====================
+// ==================== ENDPOINTS CRUD - VENTAS ====================
+
+// GET - Obtener todas las ventas
 app.get('/api/ventas', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -446,6 +449,31 @@ app.get('/api/ventas', async (req, res) => {
   }
 });
 
+// GET - Obtener una venta por ID
+app.get('/api/ventas/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre, c.documento as cliente_documento
+      FROM ventas v 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      WHERE v.id_venta = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST - Crear nueva venta
 app.post('/api/ventas', async (req, res) => {
   try {
     const { id_cliente, total, estado } = req.body;
@@ -463,6 +491,118 @@ app.post('/api/ventas', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PUT - Actualizar venta
+app.put('/api/ventas/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { id_cliente, total, estado } = req.body;
+    
+    // Verificar si la venta existe
+    const ventaExistente = await pool.query(
+      'SELECT * FROM ventas WHERE id_venta = $1',
+      [id]
+    );
+    
+    if (ventaExistente.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const result = await pool.query(
+      `UPDATE ventas SET id_cliente=$1, total=$2, estado=$3 
+       WHERE id_venta=$4 RETURNING *`,
+      [id_cliente, total, estado, id]
+    );
+    
+    res.json({ 
+      success: true, 
+      message: 'Venta actualizada exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH - Cambiar solo el estado de la venta
+app.patch('/api/ventas/:id/estado', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    // Verificar si la venta existe
+    const ventaExistente = await pool.query(
+      'SELECT * FROM ventas WHERE id_venta = $1',
+      [id]
+    );
+    
+    if (ventaExistente.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const result = await pool.query(
+      'UPDATE ventas SET estado = $1 WHERE id_venta = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    const textoEstado = estado === 1 ? 'Completada' : estado === 2 ? 'Anulada' : 'Pendiente';
+    
+    res.json({ 
+      success: true, 
+      message: `Estado de la venta actualizado a "${textoEstado}"`,
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE - Eliminar venta
+app.delete('/api/ventas/:id', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id } = req.params;
+    
+    // Verificar si la venta existe
+    const ventaExistente = await client.query(
+      'SELECT * FROM ventas WHERE id_venta = $1',
+      [id]
+    );
+    
+    if (ventaExistente.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    // Primero eliminar los detalles de venta (si existen)
+    await client.query(
+      'DELETE FROM detalle_ventas WHERE id_venta = $1',
+      [id]
+    );
+    
+    // Luego eliminar la venta
+    const result = await client.query(
+      'DELETE FROM ventas WHERE id_venta = $1 RETURNING *',
+      [id]
+    );
+    
+    await client.query('COMMIT');
+    
+    res.json({ 
+      success: true, 
+      message: 'Venta eliminada exitosamente',
+      data: result.rows[0] 
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    client.release();
   }
 });
 
