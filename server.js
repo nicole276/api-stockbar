@@ -426,8 +426,7 @@ app.post('/api/clientes', async (req, res) => {
   }
 });
 
-// ==================== ENDPOINTS CRUD - VENTAS ====================
-// ==================== ENDPOINTS CRUD - VENTAS ====================
+// ==================== ENDPOINTS CRUD - VENTAS ===================
 
 // GET - Obtener todas las ventas
 app.get('/api/ventas', async (req, res) => {
@@ -689,73 +688,6 @@ app.get('/api/ventas-completas', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ==================== ENDPOINTS QUE FALTAN PARA COMPLETAR CRUD ====================
-
-// PUT - Actualizar venta (para editar y cambiar estado)
-app.put('/api/ventas/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { id_cliente, total, estado } = req.body;
-    
-    const result = await pool.query(
-      `UPDATE ventas SET id_cliente=$1, total=$2, estado=$3 
-       WHERE id_venta=$4 RETURNING *`,
-      [id_cliente, total, estado, id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    res.json({ 
-      success: true, 
-      message: 'Venta actualizada exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// DELETE - Eliminar venta
-app.delete('/api/ventas/:id', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    
-    // Primero eliminar los detalles de venta
-    await client.query('DELETE FROM detalle_ventas WHERE id_venta = $1', [id]);
-    
-    // Luego eliminar la venta principal
-    const result = await client.query(
-      'DELETE FROM ventas WHERE id_venta = $1 RETURNING *',
-      [id]
-    );
-    
-    if (result.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    await client.query('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: 'Venta eliminada exitosamente',
-      data: result.rows[0] 
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
   }
 });
 
