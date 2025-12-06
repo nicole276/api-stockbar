@@ -5,9 +5,9 @@ const bcrypt = require('bcryptjs');
 
 const app = express();
 
-// ✅ CONFIGURACIÓN PARA RENDER - POSTGRESQL EN LA NUBE
+// ✅ USAR TU CONEXIÓN EXISTENTE
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: 'postgresql://stockbar_user:0EndlOqYMUMDsuYAlnjyQ35Vzs3rFh1V@dpg-d4dmar9r0fns73eplq4g-a/stockbar_db',
   ssl: {
     rejectUnauthorized: false
   }
@@ -35,7 +35,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Token requerido' });
     }
 
-    // Decodificar token simple (en producción usar JWT)
+    // Decodificar token simple
     const decoded = Buffer.from(token, 'base64').toString('ascii');
     const [userId] = decoded.split(':');
 
@@ -235,27 +235,30 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Generar token simple (en producción usar JWT)
+    // Generar token simple
     const tokenData = `${user.id_usuario}:${Date.now()}`;
     const token = Buffer.from(tokenData).toString('base64');
     
     // Remover contraseña del objeto de respuesta
     const { contraseña, ...userWithoutPassword } = user;
     
-    // Obtener permisos del rol
+    // Obtener módulos permitidos según el rol
     const permisosResult = await pool.query(
-      `SELECT p.* 
+      `SELECT DISTINCT p.modulo
        FROM ver_detalle_rol vdr
        JOIN permisos p ON vdr.id_permiso = p.id_permiso
-       WHERE vdr.id_rol = $1`,
+       WHERE vdr.id_rol = $1 AND p.estado = 1
+       ORDER BY p.modulo`,
       [user.id_rol]
     );
+    
+    const modulosPermitidos = permisosResult.rows.map(p => p.modulo);
     
     res.json({ 
       success: true, 
       token: token,
       user: userWithoutPassword,
-      permisos: permisosResult.rows,
+      modulos: modulosPermitidos,
       message: 'Login exitoso'
     });
     
@@ -288,9 +291,45 @@ app.get('/api/roles', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/roles/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT r.*, 
+             CASE WHEN r.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM roles r 
+      WHERE r.id_rol = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+    }
+    
+    const rol = result.rows[0];
+    
+    // Obtener permisos asignados
+    const permisosResult = await pool.query(`
+      SELECT p.* 
+      FROM ver_detalle_rol vdr
+      JOIN permisos p ON vdr.id_permiso = p.id_permiso
+      WHERE vdr.id_rol = $1
+      ORDER BY p.modulo, p.nombre_permiso
+    `, [id]);
+    
+    rol.permisos = permisosResult.rows;
+    
+    res.json({
+      success: true,
+      data: rol
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/roles', authenticateToken, async (req, res) => {
   try {
-    const { nombre_rol, descripcion, estado } = req.body;
+    const { nombre_rol, descripcion, estado, permisos } = req.body;
     
     if (!nombre_rol) {
       return res.status(400).json({ 
@@ -299,17 +338,45 @@ app.post('/api/roles', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await pool.query(
-      `INSERT INTO roles (nombre_rol, descripcion, estado) 
-       VALUES ($1, $2, $3) RETURNING *`,
-      [nombre_rol, descripcion, estado || 1]
-    );
+    const client = await pool.connect();
     
-    res.status(201).json({ 
-      success: true, 
-      message: 'Rol creado exitosamente',
-      data: result.rows[0] 
-    });
+    try {
+      await client.query('BEGIN');
+      
+      // Crear el rol
+      const rolResult = await client.query(
+        `INSERT INTO roles (nombre_rol, descripcion, estado) 
+         VALUES ($1, $2, $3) RETURNING *`,
+        [nombre_rol, descripcion, estado || 1]
+      );
+      
+      const rolId = rolResult.rows[0].id_rol;
+      
+      // Asignar permisos si se proporcionan
+      if (permisos && Array.isArray(permisos)) {
+        for (const permisoId of permisos) {
+          await client.query(
+            'INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES ($1, $2)',
+            [rolId, permisoId]
+          );
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      res.status(201).json({ 
+        success: true, 
+        message: 'Rol creado exitosamente',
+        data: rolResult.rows[0] 
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -318,23 +385,62 @@ app.post('/api/roles', authenticateToken, async (req, res) => {
 app.put('/api/roles/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre_rol, descripcion, estado } = req.body;
+    const { nombre_rol, descripcion, estado, permisos } = req.body;
     
-    const result = await pool.query(
-      `UPDATE roles SET nombre_rol=$1, descripcion=$2, estado=$3 
-       WHERE id_rol=$4 RETURNING *`,
-      [nombre_rol, descripcion, estado, id]
-    );
+    const client = await pool.connect();
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+    try {
+      await client.query('BEGIN');
+      
+      // Verificar si el rol existe
+      const rolExistente = await client.query(
+        'SELECT * FROM roles WHERE id_rol = $1',
+        [id]
+      );
+      
+      if (rolExistente.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+      }
+      
+      // Actualizar el rol
+      const rolResult = await client.query(
+        `UPDATE roles SET nombre_rol=$1, descripcion=$2, estado=$3 
+         WHERE id_rol=$4 RETURNING *`,
+        [nombre_rol, descripcion, estado, id]
+      );
+      
+      // Actualizar permisos si se proporcionan
+      if (permisos && Array.isArray(permisos)) {
+        // Eliminar permisos actuales
+        await client.query(
+          'DELETE FROM ver_detalle_rol WHERE id_rol = $1',
+          [id]
+        );
+        
+        // Insertar nuevos permisos
+        for (const permisoId of permisos) {
+          await client.query(
+            'INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES ($1, $2)',
+            [id, permisoId]
+          );
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({ 
+        success: true, 
+        message: 'Rol actualizado exitosamente',
+        data: rolResult.rows[0] 
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
     
-    res.json({ 
-      success: true, 
-      message: 'Rol actualizado exitosamente',
-      data: result.rows[0] 
-    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -357,20 +463,42 @@ app.delete('/api/roles/:id', authenticateToken, async (req, res) => {
       });
     }
     
-    const result = await pool.query(
-      'DELETE FROM roles WHERE id_rol = $1 RETURNING *',
-      [id]
-    );
+    const client = await pool.connect();
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+    try {
+      await client.query('BEGIN');
+      
+      // Eliminar permisos asignados primero
+      await client.query(
+        'DELETE FROM ver_detalle_rol WHERE id_rol = $1',
+        [id]
+      );
+      
+      // Eliminar el rol
+      const result = await client.query(
+        'DELETE FROM roles WHERE id_rol = $1 RETURNING *',
+        [id]
+      );
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({ 
+        success: true, 
+        message: 'Rol eliminado exitosamente',
+        data: result.rows[0] 
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
     
-    res.json({ 
-      success: true, 
-      message: 'Rol eliminado exitosamente',
-      data: result.rows[0] 
-    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -453,7 +581,8 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
     
     const result = await pool.query(
       `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id_usuario, nombre_completo, email, usuario, estado`,
+       VALUES ($1, $2, $3, $4, $5, $6) 
+       RETURNING id_usuario, nombre_completo, email, usuario, estado, id_rol`,
       [id_rol, nombre_completo, email, usuario, hashedPassword, estado || 1]
     );
     
@@ -470,11 +599,11 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
 app.put('/api/usuarios/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { id_rol, nombre_completo, email, usuario, estado } = req.body;
+    const { id_rol, nombre_completo, email, usuario, estado, password } = req.body;
     
     // Verificar si es el admin por defecto (NO SE PUEDE MODIFICAR EL ROL)
     const usuarioActual = await pool.query(
-      'SELECT email FROM usuarios WHERE id_usuario = $1',
+      'SELECT email, id_rol FROM usuarios WHERE id_usuario = $1',
       [id]
     );
     
@@ -484,11 +613,23 @@ app.put('/api/usuarios/:id', authenticateToken, async (req, res) => {
     
     const esAdmin = usuarioActual.rows[0].email === ADMIN_EMAIL;
     
-    const result = await pool.query(
-      `UPDATE usuarios SET id_rol=$1, nombre_completo=$2, email=$3, usuario=$4, estado=$5 
-       WHERE id_usuario=$6 RETURNING id_usuario, nombre_completo, email, usuario, estado, id_rol`,
-      [id_rol, nombre_completo, email, usuario, estado, id]
-    );
+    let query;
+    let values;
+    
+    if (password) {
+      // Si se proporciona nueva contraseña, actualizarla también
+      const hashedPassword = await bcrypt.hash(password, 10);
+      query = `UPDATE usuarios SET id_rol=$1, nombre_completo=$2, email=$3, usuario=$4, 
+               estado=$5, contraseña=$6 WHERE id_usuario=$7 
+               RETURNING id_usuario, nombre_completo, email, usuario, estado, id_rol`;
+      values = [id_rol, nombre_completo, email, usuario, estado, hashedPassword, id];
+    } else {
+      query = `UPDATE usuarios SET id_rol=$1, nombre_completo=$2, email=$3, usuario=$4, estado=$5 
+               WHERE id_usuario=$6 RETURNING id_usuario, nombre_completo, email, usuario, estado, id_rol`;
+      values = [id_rol, nombre_completo, email, usuario, estado, id];
+    }
+    
+    const result = await pool.query(query, values);
     
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
@@ -496,7 +637,7 @@ app.put('/api/usuarios/:id', authenticateToken, async (req, res) => {
     
     let mensaje = 'Usuario actualizado exitosamente';
     if (esAdmin) {
-      mensaje += ' (Admin por defecto - algunos datos protegidos)';
+      mensaje += ' (Admin por defecto - protegido)';
     }
     
     res.json({ 
@@ -554,6 +695,7 @@ app.get('/api/categorias', authenticateToken, async (req, res) => {
       SELECT id_categoria, nombre, descripcion, 
              CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
       FROM categorias 
+      WHERE estado = 1
       ORDER BY id_categoria
     `);
     
@@ -619,6 +761,48 @@ app.put('/api/categorias/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== ENDPOINTS CRUD - PRODUCTOS ====================
+app.get('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.id_producto, p.nombre, c.nombre as categoria, 
+             p.stock, p.precio_compra, p.precio_venta, 
+             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM productos p 
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria 
+      ORDER BY p.id_producto
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const { id_categoria, nombre, stock, precio_compra, precio_venta, estado } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id_categoria, nombre, stock, precio_compra, precio_venta, estado || 1]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Producto creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ==================== ENDPOINTS CRUD - COMPRAS ====================
 app.get('/api/compras', authenticateToken, async (req, res) => {
   try {
@@ -658,7 +842,7 @@ app.get('/api/compras/:id', authenticateToken, async (req, res) => {
     
     // Obtener detalles de la compra
     const detallesResult = await pool.query(`
-      SELECT dc.*, pr.nombre as producto_nombre
+      SELECT dc.*, pr.nombre as producto_nombre, pr.precio_compra
       FROM detalle_compras dc 
       LEFT JOIN productos pr ON dc.id_producto = pr.id_producto 
       WHERE dc.id_compra = $1
@@ -702,7 +886,7 @@ app.post('/api/compras', authenticateToken, async (req, res) => {
     // 2. Crear los detalles de compra y actualizar stock
     for (const producto of productos) {
       const cantidad = producto.cantidad || 1;
-      const precio = producto.precio || 0;
+      const precio = producto.precio || producto.precio_compra || 0;
       const subtotal = cantidad * precio;
       
       await client.query(
@@ -713,8 +897,8 @@ app.post('/api/compras', authenticateToken, async (req, res) => {
       
       // 3. Actualizar stock de productos (SUMAR stock)
       await client.query(
-        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
-        [cantidad, producto.id_producto]
+        'UPDATE productos SET stock = stock + $1, precio_compra = $2 WHERE id_producto = $3',
+        [cantidad, precio, producto.id_producto]
       );
       
       console.log(`📦 Compra ${compraId}: Producto ${producto.id_producto} +${cantidad} unidades`);
@@ -743,291 +927,315 @@ app.post('/api/compras', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ENDPOINT PARA CREAR TODAS LAS TABLAS ====================
-app.get('/api/create-all-tables', async (req, res) => {
+// ==================== ENDPOINTS CRUD - CLIENTES ====================
+app.get('/api/clientes', authenticateToken, async (req, res) => {
   try {
-    console.log('🔄 Creando tablas...');
-
-    // TABLA ROLES
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS roles (
-        id_rol SERIAL PRIMARY KEY,
-        nombre_rol VARCHAR(50),
-        descripcion VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
+    const result = await pool.query(`
+      SELECT id_cliente, nombre, tipo_documento, documento, 
+             telefono, direccion, 
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM clientes 
+      WHERE estado = 1
+      ORDER BY nombre
     `);
-
-    // TABLA PERMISOS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS permisos (
-        id_permiso SERIAL PRIMARY KEY,
-        nombre_permiso VARCHAR(50),
-        descripcion VARCHAR(100),
-        modulo VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA VER_DETALLE_ROL
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ver_detalle_rol (
-        id_detalle SERIAL PRIMARY KEY,
-        id_rol INTEGER REFERENCES roles(id_rol),
-        id_permiso INTEGER REFERENCES permisos(id_permiso)
-      );
-    `);
-
-    // TABLA USUARIOS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS usuarios (
-        id_usuario SERIAL PRIMARY KEY,
-        id_rol INTEGER REFERENCES roles(id_rol),
-        nombre_completo VARCHAR(50),
-        email VARCHAR(50) UNIQUE,
-        usuario VARCHAR(50),
-        contraseña VARCHAR(255),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA CATEGORIAS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS categorias (
-        id_categoria SERIAL PRIMARY KEY,
-        nombre VARCHAR(50),
-        descripcion VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA PRODUCTOS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS productos (
-        id_producto SERIAL PRIMARY KEY,
-        id_categoria INTEGER REFERENCES categorias(id_categoria),
-        nombre VARCHAR(50),
-        stock INTEGER DEFAULT 0,
-        precio_compra DECIMAL(10,2),
-        precio_venta DECIMAL(10,2),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA PROVEEDORES
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS proveedores (
-        id_proveedor SERIAL PRIMARY KEY,
-        nombre_razon_social VARCHAR(50),
-        tipo_documento VARCHAR(20),
-        documento VARCHAR(20),
-        contacto VARCHAR(50),
-        telefono VARCHAR(15),
-        email VARCHAR(50),
-        direccion VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA COMPRAS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS compras (
-        id_compra SERIAL PRIMARY KEY,
-        id_proveedor INTEGER REFERENCES proveedores(id_proveedor),
-        fecha TIMESTAMP DEFAULT NOW(),
-        total DECIMAL(10,2),
-        numero_factura VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA DETALLE_COMPRAS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS detalle_compras (
-        id_det_compra SERIAL PRIMARY KEY,
-        id_compra INTEGER REFERENCES compras(id_compra),
-        id_producto INTEGER REFERENCES productos(id_producto),
-        cantidad INTEGER,
-        precio DECIMAL(10,2),
-        subtotal DECIMAL(10,2)
-      );
-    `);
-
-    // TABLA CLIENTES
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS clientes (
-        id_cliente SERIAL PRIMARY KEY,
-        nombre VARCHAR(50),
-        tipo_documento VARCHAR(20),
-        documento VARCHAR(20),
-        telefono VARCHAR(15),
-        direccion VARCHAR(50),
-        estado SMALLINT DEFAULT 1
-      );
-    `);
-
-    // TABLA VENTAS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ventas (
-        id_venta SERIAL PRIMARY KEY,
-        id_cliente INTEGER REFERENCES clientes(id_cliente),
-        fecha TIMESTAMP DEFAULT NOW(),
-        total DECIMAL(10,2),
-        estado SMALLINT DEFAULT 0
-      );
-    `);
-
-    // TABLA DETALLE_VENTAS
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS detalle_ventas (
-        id_det_venta SERIAL PRIMARY KEY,
-        id_venta INTEGER REFERENCES ventas(id_venta),
-        id_producto INTEGER REFERENCES productos(id_producto),
-        cantidad INTEGER,
-        precio DECIMAL(10,2),
-        subtotal DECIMAL(10,2)
-      );
-    `);
-
-    console.log('✅ Tablas creadas, insertando datos...');
-
-    // INSERTAR DATOS DE ROLES
-    await pool.query(`
-      INSERT INTO roles (nombre_rol, descripcion, estado) VALUES
-      ('Administrador', 'Acceso total al sistema', 1),
-      ('Cajero', 'Puede realizar ventas', 1),
-      ('Bodeguero', 'Gestiona inventario', 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // INSERTAR PERMISOS
-    await pool.query(`
-      INSERT INTO permisos (nombre_permiso, descripcion, modulo, estado) VALUES
-      ('ver_dashboard', 'Ver panel principal', 'dashboard', 1),
-      ('gestionar_usuarios', 'Gestionar usuarios del sistema', 'usuarios', 1),
-      ('gestionar_roles', 'Gestionar roles y permisos', 'roles', 1),
-      ('gestionar_productos', 'Gestionar productos', 'productos', 1),
-      ('gestionar_categorias', 'Gestionar categorías', 'categorias', 1),
-      ('gestionar_proveedores', 'Gestionar proveedores', 'proveedores', 1),
-      ('gestionar_compras', 'Gestionar compras', 'compras', 1),
-      ('gestionar_clientes', 'Gestionar clientes', 'clientes', 1),
-      ('realizar_ventas', 'Realizar ventas', 'ventas', 1),
-      ('ver_reportes', 'Ver reportes y estadísticas', 'reportes', 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // Asignar permisos a roles
-    // Administrador: todos los permisos
-    const permisosAdmin = await pool.query('SELECT id_permiso FROM permisos');
-    for (const permiso of permisosAdmin.rows) {
-      await pool.query(
-        'INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES (1, $1) ON CONFLICT DO NOTHING',
-        [permiso.id_permiso]
-      );
-    }
-
-    // Cajero: ver dashboard, productos, clientes, realizar ventas
-    await pool.query(`
-      INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES
-      (2, 1), (2, 4), (2, 8), (2, 9)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // Bodeguero: ver dashboard, productos, categorías, proveedores, compras
-    await pool.query(`
-      INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES
-      (3, 1), (3, 4), (3, 5), (3, 6), (3, 7)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // Hashear contraseñas antes de insertarlas
-    const adminHash = await bcrypt.hash('admin123', 10);
-    const cajaHash = await bcrypt.hash('caja123', 10);
-    const bodegaHash = await bcrypt.hash('bodega123', 10);
-
-    // INSERTAR USUARIOS POR DEFECTO
-    await pool.query(`
-      INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) VALUES
-      (1, 'Administrador Principal', '${ADMIN_EMAIL}', 'admin', $1, 1),
-      (2, 'Maria Cajera', 'caja@elbar.com', 'mariacaja', $2, 1),
-      (3, 'Pedro Bodega', 'bodega@elbar.com', 'pedrobodega', $3, 1)
-      ON CONFLICT DO NOTHING;
-    `, [adminHash, cajaHash, bodegaHash]);
-
-    // INSERTAR CATEGORÍAS
-    await pool.query(`
-      INSERT INTO categorias (nombre, descripcion, estado) VALUES
-      ('Licores', 'Bebidas alcoholicas fuertes', 1),
-      ('Cervezas', 'Cervezas nacionales e importadas', 1),
-      ('Cigarrillos', 'Marcas de cigarrillos', 1),
-      ('Dulcería', 'Snacks y botanas', 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // INSERTAR PRODUCTOS
-    await pool.query(`
-      INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) VALUES
-      (1, 'Aguardiente Antioqueño 750ml', 50, 35000, 52000, 1),
-      (1, 'Ron Medellín Añejo 750ml', 30, 45000, 65000, 1),
-      (1, 'Ron Viejo de Caldas 750ml', 25, 38000, 55000, 1),
-      (2, 'Cerveza Águila Lata 330ml', 200, 2500, 4500, 1),
-      (2, 'Cerveza Poker Lata 330ml', 150, 2500, 4500, 1),
-      (2, 'Cerveza Corona Botella 355ml', 80, 5000, 8000, 1),
-      (3, 'Cigarrillo Marlboro Rojo', 100, 4500, 7000, 1),
-      (3, 'Cigarrillo Marlboro Gold', 90, 4500, 7000, 1),
-      (3, 'Cigarrillo Lucky Strike', 80, 4200, 6500, 1),
-      (4, 'Papas Margarita Natural', 60, 3200, 5500, 1),
-      (4, 'Papas Margarita Pollo', 45, 3200, 5500, 1),
-      (4, 'Platanitos Verdes', 55, 2800, 4800, 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // INSERTAR PROVEEDORES
-    await pool.query(`
-      INSERT INTO proveedores (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) VALUES
-      ('Bavaria S.A.', 'NIT', '860000123', 'Juan Distribuidor', '6012345678', 'ventas@bavaria.com.co', 'Autopista Norte #125-80, Bogotá', 1),
-      ('Distribuidora La Rebaja', 'NIT', '860000789', 'Carlos Suministros', '6034567890', 'compras@larebaja.com.co', 'Avenida 68 #15-40, Cali', 1),
-      ('Licores de Colombia S.A.', 'NIT', '860000456', 'Maria Proveedora', '6023456789', 'pedidos@licorescolombia.com.co', 'Calle 100 #25-50, Medellín', 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    // INSERTAR CLIENTES
-    await pool.query(`
-      INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) VALUES
-      ('Ana Maria López', 'CC', '1023456789', '3001234567', 'Carrera 80 #25-35, Medellín', 1),
-      ('Carlos Andrés Rodríguez', 'CC', '5234567890', '3102345678', 'Calle 50 #45-20, Bogotá', 1),
-      ('Laura Valentina García', 'CC', '2345678901', '3203456789', 'Avenida 68 #15-40, Cali', 1)
-      ON CONFLICT DO NOTHING;
-    `);
-
-    console.log('✅ Todas las tablas y datos creados exitosamente!');
-
-    res.json({ 
-      success: true, 
-      message: 'Base de datos creada exitosamente',
-      admin_por_defecto: {
-        email: ADMIN_EMAIL,
-        password: 'admin123',
-        nota: 'Este usuario no se puede eliminar'
-      },
-      usuarios_creados: [
-        { email: ADMIN_EMAIL, password: 'admin123', rol: 'Administrador' },
-        { email: 'caja@elbar.com', password: 'caja123', rol: 'Cajero' },
-        { email: 'bodega@elbar.com', password: 'bodega123', rol: 'Bodeguero' }
-      ]
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
     });
-
   } catch (error) {
-    console.error('❌ Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    const { nombre, tipo_documento, documento, telefono, direccion, estado } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [nombre, tipo_documento, documento, telefono, direccion, estado || 1]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Cliente creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - VENTAS ====================
+
+// Obtener todas las ventas
+app.get('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre,
+             CASE WHEN v.estado = 0 THEN 'Pendiente' 
+                  WHEN v.estado = 1 THEN 'Completada' 
+                  WHEN v.estado = 2 THEN 'Anulada' 
+                  ELSE 'Desconocido' END as estado_texto
+      FROM ventas v 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      ORDER BY v.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Obtener venta con detalles
+app.get('/api/ventas/:id/completa', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Obtener venta principal
+    const ventaResult = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre, c.documento, c.telefono, c.tipo_documento,
+             CASE WHEN v.estado = 0 THEN 'Pendiente' 
+                  WHEN v.estado = 1 THEN 'Completada' 
+                  WHEN v.estado = 2 THEN 'Anulada' 
+                  ELSE 'Desconocido' END as estado_texto
+      FROM ventas v 
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+      WHERE v.id_venta = $1
+    `, [id]);
+    
+    if (ventaResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const venta = ventaResult.rows[0];
+    
+    // Obtener productos de la venta
+    const detallesResult = await pool.query(`
+      SELECT dv.*, p.nombre as producto_nombre, p.precio_venta
+      FROM detalle_ventas dv 
+      LEFT JOIN productos p ON dv.id_producto = p.id_producto 
+      WHERE dv.id_venta = $1
+    `, [id]);
+    
+    venta.productos = detallesResult.rows;
+    
+    res.json({
+      success: true,
+      data: venta
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Crear venta completa
+app.post('/api/ventas-completas', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id_cliente, total, productos } = req.body;
+    
+    if (!id_cliente || !total || !productos || !Array.isArray(productos)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Faltan parámetros: id_cliente, total, productos (array)' 
+      });
+    }
+    
+    // 1. Verificar stock antes de proceder
+    for (const producto of productos) {
+      const productoInfo = await client.query(
+        'SELECT stock, nombre, precio_venta FROM productos WHERE id_producto = $1',
+        [producto.id_producto]
+      );
+      
+      if (productoInfo.rows.length === 0) {
+        throw new Error(`Producto con ID ${producto.id_producto} no encontrado`);
+      }
+      
+      const stockDisponible = productoInfo.rows[0].stock;
+      const cantidadSolicitada = producto.cantidad || 1;
+      
+      if (stockDisponible < cantidadSolicitada) {
+        throw new Error(`Stock insuficiente para "${productoInfo.rows[0].nombre}". Disponible: ${stockDisponible}, Solicitado: ${cantidadSolicitada}`);
+      }
+    }
+    
+    // 2. Crear la venta principal
+    const ventaResult = await client.query(
+      `INSERT INTO ventas (id_cliente, fecha, total, estado) 
+       VALUES ($1, NOW(), $2, $3) RETURNING *`,
+      [id_cliente, total, 1] // Estado 1 = Completada por defecto
+    );
+    
+    const ventaId = ventaResult.rows[0].id_venta;
+    
+    // 3. Crear los detalles de venta (productos)
+    for (const producto of productos) {
+      const cantidad = producto.cantidad || 1;
+      const precio = producto.precio_unitario || productoInfo?.rows[0]?.precio_venta || 0;
+      const subtotal = cantidad * precio;
+      
+      await client.query(
+        `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [ventaId, producto.id_producto, cantidad, precio, subtotal]
+      );
+      
+      // 4. Actualizar stock de productos (RESTAR stock)
+      await client.query(
+        'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
+        [cantidad, producto.id_producto]
+      );
+      
+      console.log(`📦 Venta ${ventaId}: Producto ${producto.id_producto} -${cantidad} unidades`);
+    }
+    
+    await client.query('COMMIT');
+    
+    res.status(201).json({ 
+      success: true, 
+      message: '✅ Venta registrada exitosamente. Stock actualizado.',
+      data: {
+        venta: ventaResult.rows[0],
+        productos_vendidos: productos.length,
+        total_productos: productos.reduce((sum, p) => sum + (p.cantidad || 1), 0)
+      }
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error al registrar venta completa:', error);
     res.status(500).json({ 
       success: false, 
       error: error.message 
     });
+  } finally {
+    client.release();
   }
 });
 
-// (Mantén todos los endpoints existentes de productos, clientes, ventas...)
-// Solo añade el código anterior, el resto de tus endpoints existentes se mantienen igual
+// Anular venta y devolver stock
+app.patch('/api/ventas/:id/anular', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id } = req.params;
+    
+    // 1. Verificar si la venta existe
+    const ventaResult = await client.query(
+      `SELECT v.*, c.nombre as cliente_nombre 
+       FROM ventas v 
+       LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
+       WHERE v.id_venta = $1`,
+      [id]
+    );
+    
+    if (ventaResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
+    }
+    
+    const venta = ventaResult.rows[0];
+    
+    // Verificar que no esté ya anulada
+    if (venta.estado === 2) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'La venta ya está anulada' 
+      });
+    }
+    
+    // 2. Obtener los productos de la venta
+    const detallesResult = await client.query(
+      `SELECT dv.*, p.nombre as producto_nombre 
+       FROM detalle_ventas dv 
+       LEFT JOIN productos p ON dv.id_producto = p.id_producto 
+       WHERE dv.id_venta = $1`,
+      [id]
+    );
+    
+    const productos = detallesResult.rows;
+    
+    if (productos.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'La venta no tiene productos' 
+      });
+    }
+    
+    // 3. Devolver cada producto al stock
+    console.log(`📦 Anulando venta ${id}: Devolviendo ${productos.length} productos al stock`);
+    
+    for (const producto of productos) {
+      await client.query(
+        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
+        [producto.cantidad, producto.id_producto]
+      );
+      
+      console.log(`   ✅ Producto ${producto.producto_nombre} (ID: ${producto.id_producto}): +${producto.cantidad} unidades`);
+    }
+    
+    // 4. Actualizar estado de la venta a "Anulada" (estado 2)
+    const updateResult = await client.query(
+      'UPDATE ventas SET estado = 2 WHERE id_venta = $1 RETURNING *',
+      [id]
+    );
+    
+    await client.query('COMMIT');
+    
+    res.json({ 
+      success: true, 
+      message: '✅ Venta anulada exitosamente. Productos devueltos al stock.',
+      data: {
+        venta: updateResult.rows[0],
+        productos_devueltos: productos.length
+      }
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error al anular venta:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// ==================== ENDPOINTS PARA PERMISOS ====================
+app.get('/api/permisos', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.*, 
+             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM permisos p 
+      ORDER BY p.modulo, p.nombre_permiso
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // ==================== ENDPOINT PARA OBTENER MISMO USUARIO ====================
 app.get('/api/perfil', authenticateToken, async (req, res) => {
@@ -1055,36 +1263,35 @@ app.get('/api/perfil', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== ENDPOINT DE ESTADO ACTUALIZADO ====================
+// ==================== ENDPOINT DE ESTADO ====================
 app.get('/api/status', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as server_time');
     
     // Obtener conteos
-    const productosCount = await pool.query('SELECT COUNT(*) FROM productos');
-    const clientesCount = await pool.query('SELECT COUNT(*) FROM clientes');
-    const ventasCount = await pool.query('SELECT COUNT(*) FROM ventas');
-    const ventasActivas = await pool.query("SELECT COUNT(*) FROM ventas WHERE estado != 2");
-    const usuariosCount = await pool.query('SELECT COUNT(*) FROM usuarios');
-    const rolesCount = await pool.query('SELECT COUNT(*) FROM roles');
-    const categoriasCount = await pool.query('SELECT COUNT(*) FROM categorias');
-    const comprasCount = await pool.query('SELECT COUNT(*) FROM compras');
+    const productosCount = await pool.query('SELECT COUNT(*) FROM productos WHERE estado = 1');
+    const clientesCount = await pool.query('SELECT COUNT(*) FROM clientes WHERE estado = 1');
+    const ventasCount = await pool.query('SELECT COUNT(*) FROM ventas WHERE estado = 1');
+    const usuariosCount = await pool.query('SELECT COUNT(*) FROM usuarios WHERE estado = 1');
+    const rolesCount = await pool.query('SELECT COUNT(*) FROM roles WHERE estado = 1');
+    const categoriasCount = await pool.query('SELECT COUNT(*) FROM categorias WHERE estado = 1');
+    const comprasCount = await pool.query('SELECT COUNT(*) FROM compras WHERE estado = 1');
     
     res.json({
       success: true,
       message: '🚀 API StockBar funcionando correctamente',
       server_time: result.rows[0].server_time,
-      version: '4.0.0',
+      version: '5.0.0',
       admin_por_defecto: ADMIN_EMAIL,
+      database: 'Conectada correctamente',
       estadisticas: {
-        productos: parseInt(productosCount.rows[0].count),
-        clientes: parseInt(clientesCount.rows[0].count),
-        ventas_totales: parseInt(ventasCount.rows[0].count),
-        ventas_activas: parseInt(ventasActivas.rows[0].count),
-        usuarios: parseInt(usuariosCount.rows[0].count),
-        roles: parseInt(rolesCount.rows[0].count),
-        categorias: parseInt(categoriasCount.rows[0].count),
-        compras: parseInt(comprasCount.rows[0].count)
+        productos_activos: parseInt(productosCount.rows[0].count),
+        clientes_activos: parseInt(clientesCount.rows[0].count),
+        ventas_completadas: parseInt(ventasCount.rows[0].count),
+        usuarios_activos: parseInt(usuariosCount.rows[0].count),
+        roles_activos: parseInt(rolesCount.rows[0].count),
+        categorias_activas: parseInt(categoriasCount.rows[0].count),
+        compras_activas: parseInt(comprasCount.rows[0].count)
       },
       endpoints_autenticacion: {
         verificar_email: 'POST /api/verificar-email',
@@ -1095,23 +1302,64 @@ app.get('/api/status', async (req, res) => {
       endpoints_principales: {
         roles: 'GET /api/roles',
         usuarios: 'GET /api/usuarios',
+        permisos: 'GET /api/permisos',
         categorias: 'GET /api/categorias',
         compras: 'GET /api/compras',
         productos: 'GET /api/productos',
         clientes: 'GET /api/clientes',
         ventas: 'GET /api/ventas',
-        ventas_completas: 'GET /api/ventas-completas',
-        crear_venta: 'POST /api/ventas-completas',
-        anular_venta: 'PATCH /api/ventas/:id/anular',
-        actualizar_stock: 'PATCH /api/productos/:id/stock'
-      },
-      nota: `El usuario ${ADMIN_EMAIL} es el administrador por defecto y no se puede eliminar`
+        ventas_completas: 'POST /api/ventas-completas',
+        anular_venta: 'PATCH /api/ventas/:id/anular'
+      }
     });
   } catch (error) {
     res.status(500).json({ 
       success: false, 
-      error: error.message 
+      error: error.message,
+      database_status: 'Error de conexión'
     });
+  }
+});
+
+// ==================== ENDPOINT PARA VERIFICAR DATOS EXISTENTES ====================
+app.get('/api/check-data', async (req, res) => {
+  try {
+    // Verificar si el admin existe
+    const adminResult = await pool.query(
+      'SELECT * FROM usuarios WHERE email = $1',
+      [ADMIN_EMAIL]
+    );
+    
+    // Obtener todos los conteos
+    const [
+      rolesCount,
+      usuariosCount,
+      categoriasCount,
+      productosCount,
+      permisosCount
+    ] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM roles'),
+      pool.query('SELECT COUNT(*) FROM usuarios'),
+      pool.query('SELECT COUNT(*) FROM categorias'),
+      pool.query('SELECT COUNT(*) FROM productos'),
+      pool.query('SELECT COUNT(*) FROM permisos')
+    ]);
+    
+    res.json({
+      success: true,
+      admin_exists: adminResult.rows.length > 0,
+      admin_data: adminResult.rows[0] || null,
+      conteos: {
+        roles: parseInt(rolesCount.rows[0].count),
+        usuarios: parseInt(usuariosCount.rows[0].count),
+        categorias: parseInt(categoriasCount.rows[0].count),
+        productos: parseInt(productosCount.rows[0].count),
+        permisos: parseInt(permisosCount.rows[0].count)
+      },
+      nota: 'Si el admin no existe, puedes crearlo manualmente usando el endpoint /api/usuarios'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -1119,29 +1367,91 @@ app.get('/api/status', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 API StockBar - Sistema de Gestión para Licorería',
-    version: '4.0.0',
+    version: '5.0.0',
     admin_por_defecto: ADMIN_EMAIL,
+    database: 'Conectada a PostgreSQL',
     features: [
-      '✅ Sistema de autenticación completo con recuperación de contraseña',
-      '✅ Gestión de roles y permisos por usuario',
-      '✅ Admin por defecto protegido (no se puede eliminar)',
-      '✅ Gestión completa de ventas con control de stock automático',
-      '✅ CRUD completo para usuarios, roles, categorías, compras',
-      '✅ Contraseñas almacenadas de forma segura con bcrypt'
+      '✅ Sistema de autenticación completo',
+      '✅ Admin por defecto protegido',
+      '✅ Gestión de roles y permisos',
+      '✅ CRUD completo para todas las entidades',
+      '✅ Control automático de stock en ventas/compras'
     ],
-    moneda: 'Todos los precios están en Pesos Colombianos (COP)',
-    documentacion: 'Visita /api/status para ver todos los endpoints disponibles',
-    crear_base_datos: 'GET /api/create-all-tables'
+    login_admin: {
+      email: ADMIN_EMAIL,
+      password: 'admin123 (o la que tengas configurada)'
+    },
+    endpoints_disponibles: 'Visita /api/status para ver todos los endpoints'
   });
 });
 
+// ==================== FUNCIÓN PARA CREAR ADMIN SI NO EXISTE ====================
+async function ensureAdminExists() {
+  try {
+    console.log('🔍 Verificando si el admin existe...');
+    
+    const adminResult = await pool.query(
+      'SELECT * FROM usuarios WHERE email = $1',
+      [ADMIN_EMAIL]
+    );
+    
+    if (adminResult.rows.length === 0) {
+      console.log('⚠️ Admin no encontrado, creando administrador por defecto...');
+      
+      // Verificar si existe el rol Administrador
+      const rolResult = await pool.query(
+        'SELECT id_rol FROM roles WHERE nombre_rol = $1',
+        ['Administrador']
+      );
+      
+      let idRol;
+      if (rolResult.rows.length > 0) {
+        idRol = rolResult.rows[0].id_rol;
+      } else {
+        // Crear rol Administrador si no existe
+        const nuevoRol = await pool.query(
+          'INSERT INTO roles (nombre_rol, descripcion, estado) VALUES ($1, $2, $3) RETURNING id_rol',
+          ['Administrador', 'Acceso total al sistema', 1]
+        );
+        idRol = nuevoRol.rows[0].id_rol;
+      }
+      
+      // Hashear contraseña por defecto
+      const hashedPassword = await bcrypt.hash('admin123', 10);
+      
+      // Crear usuario admin
+      await pool.query(
+        `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) 
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [idRol, 'Administrador Principal', ADMIN_EMAIL, 'admin', hashedPassword, 1]
+      );
+      
+      console.log('✅ Admin creado exitosamente');
+    } else {
+      console.log('✅ Admin ya existe en la base de datos');
+    }
+  } catch (error) {
+    console.error('❌ Error al verificar/crear admin:', error);
+  }
+}
+
 // Iniciar servidor
-app.listen(PORT, '0.0.0.0', () => {
-  console.log('🚀 Servidor API StockBar - VERSION 4.0');
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log('🚀 Servidor API StockBar - VERSION 5.0');
   console.log('📡 Puerto: ' + PORT);
-  console.log('🌐 URL: https://api-stockbar.onrender.com');
-  console.log('🔐 Sistema de autenticación completo');
-  console.log('👑 Admin por defecto: ' + ADMIN_EMAIL);
-  console.log('💰 Todos los precios en Pesos Colombianos (COP)');
-  console.log('⚡ Para crear la base de datos: GET /api/create-all-tables');
+  console.log('🌐 URL: http://localhost:' + PORT);
+  console.log('🗄️  Base de datos: PostgreSQL conectada');
+  console.log('🔐 Admin por defecto: ' + ADMIN_EMAIL);
+  
+  // Verificar y crear admin si no existe
+  await ensureAdminExists();
+  
+  console.log('\n📚 Endpoints principales:');
+  console.log('   GET  /api/status          - Estado del sistema');
+  console.log('   POST /api/login           - Iniciar sesión');
+  console.log('   POST /api/verificar-email - Recuperar contraseña');
+  console.log('   GET  /api/check-data      - Verificar datos');
+  console.log('\n💡 Para login usar:');
+  console.log('   Email: ' + ADMIN_EMAIL);
+  console.log('   Password: admin123 (o la que tengas configurada)');
 });
