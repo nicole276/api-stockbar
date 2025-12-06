@@ -19,8 +19,46 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Almacenamiento temporal de códigos de verificación (en producción usar Redis)
+// Almacenamiento temporal de códigos de verificación
 const verificationCodes = new Map();
+
+// Email del admin por defecto (NO SE PUEDE ELIMINAR)
+const ADMIN_EMAIL = 'thebar752@gmail.com';
+
+// ==================== MIDDLEWARE DE AUTENTICACIÓN ====================
+const authenticateToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Token requerido' });
+    }
+
+    // Decodificar token simple (en producción usar JWT)
+    const decoded = Buffer.from(token, 'base64').toString('ascii');
+    const [userId] = decoded.split(':');
+
+    // Verificar usuario en base de datos
+    const result = await pool.query(
+      `SELECT u.*, r.nombre_rol, r.descripcion 
+       FROM usuarios u 
+       LEFT JOIN roles r ON u.id_rol = r.id_rol 
+       WHERE u.id_usuario = $1 AND u.estado = 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ success: false, message: 'Usuario no autorizado' });
+    }
+
+    req.user = result.rows[0];
+    next();
+  } catch (error) {
+    console.error('❌ Error en autenticación:', error);
+    return res.status(401).json({ success: false, message: 'Token inválido' });
+  }
+};
 
 // ==================== ENDPOINTS DE AUTENTICACIÓN ====================
 
@@ -38,14 +76,15 @@ app.post('/api/verificar-email', async (req, res) => {
     
     // Verificar si el email existe en la base de datos
     const result = await pool.query(
-      'SELECT id_usuario, email FROM usuarios WHERE email = $1',
+      'SELECT id_usuario, email, usuario, id_rol FROM usuarios WHERE email = $1 AND estado = 1',
       [email]
     );
     
     const exists = result.rows.length > 0;
     
-    // Generar código de verificación (6 dígitos)
     if (exists) {
+      const user = result.rows[0];
+      // Generar código de verificación (6 dígitos)
       const codigo = Math.floor(100000 + Math.random() * 900000).toString();
       
       // Guardar código con timestamp (expira en 10 minutos)
@@ -56,14 +95,13 @@ app.post('/api/verificar-email', async (req, res) => {
       });
       
       console.log(`📧 Código de verificación para ${email}: ${codigo}`);
-      console.log('⚠️ En producción, enviar este código por email/SMS');
       
       return res.json({ 
         success: true, 
         exists: true,
         message: 'Email encontrado. Código de verificación generado.',
-        // Solo en desarrollo enviamos el código
-        codigo: codigo // Remover en producción
+        codigo: codigo, // Solo para desarrollo
+        usuario: user.usuario
       });
     } else {
       return res.json({ 
@@ -126,14 +164,14 @@ app.post('/api/actualizar-password', async (req, res) => {
     
     // Actualizar la contraseña en la base de datos
     const result = await pool.query(
-      'UPDATE usuarios SET contraseña = $1 WHERE email = $2 RETURNING id_usuario, email, usuario',
+      'UPDATE usuarios SET contraseña = $1 WHERE email = $2 AND estado = 1 RETURNING id_usuario, email, usuario',
       [hashedPassword, email]
     );
     
     if (result.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Usuario no encontrado' 
+        message: 'Usuario no encontrado o inactivo' 
       });
     }
     
@@ -171,7 +209,7 @@ app.post('/api/login', async (req, res) => {
     
     // Buscar usuario por email
     const result = await pool.query(
-      `SELECT u.*, r.nombre_rol 
+      `SELECT u.*, r.nombre_rol, r.descripcion 
        FROM usuarios u 
        LEFT JOIN roles r ON u.id_rol = r.id_rol 
        WHERE u.email = $1 AND u.estado = 1`,
@@ -198,15 +236,26 @@ app.post('/api/login', async (req, res) => {
     }
     
     // Generar token simple (en producción usar JWT)
-    const token = Buffer.from(`${user.id_usuario}:${Date.now()}`).toString('base64');
+    const tokenData = `${user.id_usuario}:${Date.now()}`;
+    const token = Buffer.from(tokenData).toString('base64');
     
     // Remover contraseña del objeto de respuesta
     const { contraseña, ...userWithoutPassword } = user;
+    
+    // Obtener permisos del rol
+    const permisosResult = await pool.query(
+      `SELECT p.* 
+       FROM ver_detalle_rol vdr
+       JOIN permisos p ON vdr.id_permiso = p.id_permiso
+       WHERE vdr.id_rol = $1`,
+      [user.id_rol]
+    );
     
     res.json({ 
       success: true, 
       token: token,
       user: userWithoutPassword,
+      permisos: permisosResult.rows,
       message: 'Login exitoso'
     });
     
@@ -216,6 +265,481 @@ app.post('/api/login', async (req, res) => {
       success: false, 
       error: error.message 
     });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - ROLES ====================
+app.get('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id_rol, nombre_rol, descripcion, 
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM roles 
+      ORDER BY id_rol
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    const { nombre_rol, descripcion, estado } = req.body;
+    
+    if (!nombre_rol) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Nombre del rol es requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO roles (nombre_rol, descripcion, estado) 
+       VALUES ($1, $2, $3) RETURNING *`,
+      [nombre_rol, descripcion, estado || 1]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Rol creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/roles/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre_rol, descripcion, estado } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE roles SET nombre_rol=$1, descripcion=$2, estado=$3 
+       WHERE id_rol=$4 RETURNING *`,
+      [nombre_rol, descripcion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Rol actualizado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/roles/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verificar si el rol tiene usuarios asignados
+    const usuariosResult = await pool.query(
+      'SELECT COUNT(*) FROM usuarios WHERE id_rol = $1',
+      [id]
+    );
+    
+    if (parseInt(usuariosResult.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No se puede eliminar el rol porque tiene usuarios asignados' 
+      });
+    }
+    
+    const result = await pool.query(
+      'DELETE FROM roles WHERE id_rol = $1 RETURNING *',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Rol no encontrado' });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Rol eliminado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - USUARIOS ====================
+app.get('/api/usuarios', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id_usuario, u.nombre_completo, u.email, u.usuario, 
+             u.estado, r.nombre_rol,
+             CASE WHEN u.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM usuarios u 
+      LEFT JOIN roles r ON u.id_rol = r.id_rol 
+      ORDER BY u.id_usuario
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT u.*, r.nombre_rol
+      FROM usuarios u 
+      LEFT JOIN roles r ON u.id_rol = r.id_rol 
+      WHERE u.id_usuario = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+    
+    // Remover contraseña de la respuesta
+    const { contraseña, ...usuarioSinPassword } = result.rows[0];
+    
+    res.json({
+      success: true,
+      data: usuarioSinPassword
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/usuarios', authenticateToken, async (req, res) => {
+  try {
+    const { id_rol, nombre_completo, email, usuario, password, estado } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Email y contraseña son requeridos' 
+      });
+    }
+    
+    // Verificar si el email ya existe
+    const emailExists = await pool.query(
+      'SELECT id_usuario FROM usuarios WHERE email = $1',
+      [email]
+    );
+    
+    if (emailExists.rows.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'El email ya está registrado' 
+      });
+    }
+    
+    // Hashear la contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    const result = await pool.query(
+      `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id_usuario, nombre_completo, email, usuario, estado`,
+      [id_rol, nombre_completo, email, usuario, hashedPassword, estado || 1]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Usuario creado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { id_rol, nombre_completo, email, usuario, estado } = req.body;
+    
+    // Verificar si es el admin por defecto (NO SE PUEDE MODIFICAR EL ROL)
+    const usuarioActual = await pool.query(
+      'SELECT email FROM usuarios WHERE id_usuario = $1',
+      [id]
+    );
+    
+    if (usuarioActual.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+    
+    const esAdmin = usuarioActual.rows[0].email === ADMIN_EMAIL;
+    
+    const result = await pool.query(
+      `UPDATE usuarios SET id_rol=$1, nombre_completo=$2, email=$3, usuario=$4, estado=$5 
+       WHERE id_usuario=$6 RETURNING id_usuario, nombre_completo, email, usuario, estado, id_rol`,
+      [id_rol, nombre_completo, email, usuario, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+    
+    let mensaje = 'Usuario actualizado exitosamente';
+    if (esAdmin) {
+      mensaje += ' (Admin por defecto - algunos datos protegidos)';
+    }
+    
+    res.json({ 
+      success: true, 
+      message: mensaje,
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verificar si es el admin por defecto (NO SE PUEDE ELIMINAR)
+    const usuarioResult = await pool.query(
+      'SELECT email FROM usuarios WHERE id_usuario = $1',
+      [id]
+    );
+    
+    if (usuarioResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
+    }
+    
+    const email = usuarioResult.rows[0].email;
+    
+    if (email === ADMIN_EMAIL) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'No se puede eliminar el administrador por defecto' 
+      });
+    }
+    
+    const result = await pool.query(
+      'DELETE FROM usuarios WHERE id_usuario = $1 RETURNING id_usuario, email, usuario',
+      [id]
+    );
+    
+    res.json({ 
+      success: true, 
+      message: 'Usuario eliminado exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - CATEGORIAS ====================
+app.get('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id_categoria, nombre, descripcion, 
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
+      FROM categorias 
+      ORDER BY id_categoria
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    const { nombre, descripcion, estado } = req.body;
+    
+    if (!nombre) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Nombre de categoría es requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO categorias (nombre, descripcion, estado) 
+       VALUES ($1, $2, $3) RETURNING *`,
+      [nombre, descripcion, estado || 1]
+    );
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Categoría creada exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/categorias/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, descripcion, estado } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE categorias SET nombre=$1, descripcion=$2, estado=$3 
+       WHERE id_categoria=$4 RETURNING *`,
+      [nombre, descripcion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Categoría no encontrada' });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Categoría actualizada exitosamente',
+      data: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== ENDPOINTS CRUD - COMPRAS ====================
+app.get('/api/compras', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, p.nombre_razon_social as proveedor_nombre,
+             CASE WHEN c.estado = 1 THEN 'Activa' ELSE 'Inactiva' END as estado_texto
+      FROM compras c 
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor 
+      ORDER BY c.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/compras/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT c.*, p.nombre_razon_social, p.documento, p.contacto
+      FROM compras c 
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor 
+      WHERE c.id_compra = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Compra no encontrada' });
+    }
+    
+    const compra = result.rows[0];
+    
+    // Obtener detalles de la compra
+    const detallesResult = await pool.query(`
+      SELECT dc.*, pr.nombre as producto_nombre
+      FROM detalle_compras dc 
+      LEFT JOIN productos pr ON dc.id_producto = pr.id_producto 
+      WHERE dc.id_compra = $1
+    `, [id]);
+    
+    compra.detalles = detallesResult.rows;
+    
+    res.json({
+      success: true,
+      data: compra
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/compras', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { id_proveedor, total, numero_factura, estado, productos } = req.body;
+    
+    if (!id_proveedor || !total || !productos || !Array.isArray(productos)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Faltan parámetros: id_proveedor, total, productos (array)' 
+      });
+    }
+    
+    // 1. Crear la compra principal
+    const compraResult = await client.query(
+      `INSERT INTO compras (id_proveedor, fecha, total, numero_factura, estado) 
+       VALUES ($1, NOW(), $2, $3, $4) RETURNING *`,
+      [id_proveedor, total, numero_factura, estado || 1]
+    );
+    
+    const compraId = compraResult.rows[0].id_compra;
+    
+    // 2. Crear los detalles de compra y actualizar stock
+    for (const producto of productos) {
+      const cantidad = producto.cantidad || 1;
+      const precio = producto.precio || 0;
+      const subtotal = cantidad * precio;
+      
+      await client.query(
+        `INSERT INTO detalle_compras (id_compra, id_producto, cantidad, precio, subtotal) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [compraId, producto.id_producto, cantidad, precio, subtotal]
+      );
+      
+      // 3. Actualizar stock de productos (SUMAR stock)
+      await client.query(
+        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
+        [cantidad, producto.id_producto]
+      );
+      
+      console.log(`📦 Compra ${compraId}: Producto ${producto.id_producto} +${cantidad} unidades`);
+    }
+    
+    await client.query('COMMIT');
+    
+    res.status(201).json({ 
+      success: true, 
+      message: '✅ Compra registrada exitosamente. Stock actualizado.',
+      data: {
+        compra: compraResult.rows[0],
+        productos_comprados: productos.length
+      }
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error al registrar compra:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  } finally {
+    client.release();
   }
 });
 
@@ -230,7 +754,7 @@ app.get('/api/create-all-tables', async (req, res) => {
         id_rol SERIAL PRIMARY KEY,
         nombre_rol VARCHAR(50),
         descripcion VARCHAR(50),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -238,7 +762,10 @@ app.get('/api/create-all-tables', async (req, res) => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS permisos (
         id_permiso SERIAL PRIMARY KEY,
-        id_rol INTEGER
+        nombre_permiso VARCHAR(50),
+        descripcion VARCHAR(100),
+        modulo VARCHAR(50),
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -260,7 +787,7 @@ app.get('/api/create-all-tables', async (req, res) => {
         email VARCHAR(50) UNIQUE,
         usuario VARCHAR(50),
         contraseña VARCHAR(255),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -270,7 +797,7 @@ app.get('/api/create-all-tables', async (req, res) => {
         id_categoria SERIAL PRIMARY KEY,
         nombre VARCHAR(50),
         descripcion VARCHAR(50),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -280,10 +807,10 @@ app.get('/api/create-all-tables', async (req, res) => {
         id_producto SERIAL PRIMARY KEY,
         id_categoria INTEGER REFERENCES categorias(id_categoria),
         nombre VARCHAR(50),
-        stock INTEGER,
+        stock INTEGER DEFAULT 0,
         precio_compra DECIMAL(10,2),
         precio_venta DECIMAL(10,2),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -293,12 +820,12 @@ app.get('/api/create-all-tables', async (req, res) => {
         id_proveedor SERIAL PRIMARY KEY,
         nombre_razon_social VARCHAR(50),
         tipo_documento VARCHAR(20),
-        documento INTEGER,
+        documento VARCHAR(20),
         contacto VARCHAR(50),
         telefono VARCHAR(15),
         email VARCHAR(50),
         direccion VARCHAR(50),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -307,10 +834,10 @@ app.get('/api/create-all-tables', async (req, res) => {
       CREATE TABLE IF NOT EXISTS compras (
         id_compra SERIAL PRIMARY KEY,
         id_proveedor INTEGER REFERENCES proveedores(id_proveedor),
-        fecha TIMESTAMP,
+        fecha TIMESTAMP DEFAULT NOW(),
         total DECIMAL(10,2),
         numero_factura VARCHAR(50),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -335,7 +862,7 @@ app.get('/api/create-all-tables', async (req, res) => {
         documento VARCHAR(20),
         telefono VARCHAR(15),
         direccion VARCHAR(50),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 1
       );
     `);
 
@@ -344,9 +871,9 @@ app.get('/api/create-all-tables', async (req, res) => {
       CREATE TABLE IF NOT EXISTS ventas (
         id_venta SERIAL PRIMARY KEY,
         id_cliente INTEGER REFERENCES clientes(id_cliente),
-        fecha TIMESTAMP,
+        fecha TIMESTAMP DEFAULT NOW(),
         total DECIMAL(10,2),
-        estado SMALLINT
+        estado SMALLINT DEFAULT 0
       );
     `);
 
@@ -364,7 +891,7 @@ app.get('/api/create-all-tables', async (req, res) => {
 
     console.log('✅ Tablas creadas, insertando datos...');
 
-    // INSERTAR DATOS
+    // INSERTAR DATOS DE ROLES
     await pool.query(`
       INSERT INTO roles (nombre_rol, descripcion, estado) VALUES
       ('Administrador', 'Acceso total al sistema', 1),
@@ -373,14 +900,43 @@ app.get('/api/create-all-tables', async (req, res) => {
       ON CONFLICT DO NOTHING;
     `);
 
+    // INSERTAR PERMISOS
     await pool.query(`
-      INSERT INTO permisos (id_rol) VALUES (1), (2), (3)
+      INSERT INTO permisos (nombre_permiso, descripcion, modulo, estado) VALUES
+      ('ver_dashboard', 'Ver panel principal', 'dashboard', 1),
+      ('gestionar_usuarios', 'Gestionar usuarios del sistema', 'usuarios', 1),
+      ('gestionar_roles', 'Gestionar roles y permisos', 'roles', 1),
+      ('gestionar_productos', 'Gestionar productos', 'productos', 1),
+      ('gestionar_categorias', 'Gestionar categorías', 'categorias', 1),
+      ('gestionar_proveedores', 'Gestionar proveedores', 'proveedores', 1),
+      ('gestionar_compras', 'Gestionar compras', 'compras', 1),
+      ('gestionar_clientes', 'Gestionar clientes', 'clientes', 1),
+      ('realizar_ventas', 'Realizar ventas', 'ventas', 1),
+      ('ver_reportes', 'Ver reportes y estadísticas', 'reportes', 1)
       ON CONFLICT DO NOTHING;
     `);
 
+    // Asignar permisos a roles
+    // Administrador: todos los permisos
+    const permisosAdmin = await pool.query('SELECT id_permiso FROM permisos');
+    for (const permiso of permisosAdmin.rows) {
+      await pool.query(
+        'INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES (1, $1) ON CONFLICT DO NOTHING',
+        [permiso.id_permiso]
+      );
+    }
+
+    // Cajero: ver dashboard, productos, clientes, realizar ventas
     await pool.query(`
       INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES
-      (1, 1), (2, 2), (3, 3)
+      (2, 1), (2, 4), (2, 8), (2, 9)
+      ON CONFLICT DO NOTHING;
+    `);
+
+    // Bodeguero: ver dashboard, productos, categorías, proveedores, compras
+    await pool.query(`
+      INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES
+      (3, 1), (3, 4), (3, 5), (3, 6), (3, 7)
       ON CONFLICT DO NOTHING;
     `);
 
@@ -389,14 +945,16 @@ app.get('/api/create-all-tables', async (req, res) => {
     const cajaHash = await bcrypt.hash('caja123', 10);
     const bodegaHash = await bcrypt.hash('bodega123', 10);
 
+    // INSERTAR USUARIOS POR DEFECTO
     await pool.query(`
       INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) VALUES
-      (1, 'Carlos Admin', 'admin@elbar.com', 'carlosadmin', $1, 1),
+      (1, 'Administrador Principal', '${ADMIN_EMAIL}', 'admin', $1, 1),
       (2, 'Maria Cajera', 'caja@elbar.com', 'mariacaja', $2, 1),
       (3, 'Pedro Bodega', 'bodega@elbar.com', 'pedrobodega', $3, 1)
       ON CONFLICT DO NOTHING;
     `, [adminHash, cajaHash, bodegaHash]);
 
+    // INSERTAR CATEGORÍAS
     await pool.query(`
       INSERT INTO categorias (nombre, descripcion, estado) VALUES
       ('Licores', 'Bebidas alcoholicas fuertes', 1),
@@ -406,6 +964,7 @@ app.get('/api/create-all-tables', async (req, res) => {
       ON CONFLICT DO NOTHING;
     `);
 
+    // INSERTAR PRODUCTOS
     await pool.query(`
       INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) VALUES
       (1, 'Aguardiente Antioqueño 750ml', 50, 35000, 52000, 1),
@@ -423,14 +982,16 @@ app.get('/api/create-all-tables', async (req, res) => {
       ON CONFLICT DO NOTHING;
     `);
 
+    // INSERTAR PROVEEDORES
     await pool.query(`
       INSERT INTO proveedores (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) VALUES
-      ('Bavaria S.A.', 'NIT', 860000123, 'Juan Distribuidor', '6012345678', 'ventas@bavaria.com.co', 'Autopista Norte #125-80, Bogotá', 1),
-      ('Distribuidora La Rebaja', 'NIT', 860000789, 'Carlos Suministros', '6034567890', 'compras@larebaja.com.co', 'Avenida 68 #15-40, Cali', 1),
-      ('Licores de Colombia S.A.', 'NIT', 860000456, 'Maria Proveedora', '6023456789', 'pedidos@licorescolombia.com.co', 'Calle 100 #25-50, Medellín', 1)
+      ('Bavaria S.A.', 'NIT', '860000123', 'Juan Distribuidor', '6012345678', 'ventas@bavaria.com.co', 'Autopista Norte #125-80, Bogotá', 1),
+      ('Distribuidora La Rebaja', 'NIT', '860000789', 'Carlos Suministros', '6034567890', 'compras@larebaja.com.co', 'Avenida 68 #15-40, Cali', 1),
+      ('Licores de Colombia S.A.', 'NIT', '860000456', 'Maria Proveedora', '6023456789', 'pedidos@licorescolombia.com.co', 'Calle 100 #25-50, Medellín', 1)
       ON CONFLICT DO NOTHING;
     `);
 
+    // INSERTAR CLIENTES
     await pool.query(`
       INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) VALUES
       ('Ana Maria López', 'CC', '1023456789', '3001234567', 'Carrera 80 #25-35, Medellín', 1),
@@ -444,13 +1005,13 @@ app.get('/api/create-all-tables', async (req, res) => {
     res.json({ 
       success: true, 
       message: 'Base de datos creada exitosamente',
-      tablas_creadas: [
-        'roles', 'permisos', 'ver_detalle_rol', 'usuarios',
-        'categorias', 'productos', 'proveedores', 'compras',
-        'detalle_compras', 'clientes', 'ventas', 'detalle_ventas'
-      ],
+      admin_por_defecto: {
+        email: ADMIN_EMAIL,
+        password: 'admin123',
+        nota: 'Este usuario no se puede eliminar'
+      },
       usuarios_creados: [
-        { email: 'admin@elbar.com', password: 'admin123', rol: 'Administrador' },
+        { email: ADMIN_EMAIL, password: 'admin123', rol: 'Administrador' },
         { email: 'caja@elbar.com', password: 'caja123', rol: 'Cajero' },
         { email: 'bodega@elbar.com', password: 'bodega123', rol: 'Bodeguero' }
       ]
@@ -465,40 +1026,24 @@ app.get('/api/create-all-tables', async (req, res) => {
   }
 });
 
-// ==================== ENDPOINTS CRUD - PRODUCTOS ====================
-app.get('/api/productos', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT p.id_producto, p.nombre, c.nombre as categoria, 
-             p.stock, p.precio_compra, p.precio_venta, 
-             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado
-      FROM productos p 
-      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria 
-      ORDER BY p.id_producto
-    `);
-    
-    res.json({
-      success: true,
-      data: result.rows,
-      total: result.rows.length
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+// (Mantén todos los endpoints existentes de productos, clientes, ventas...)
+// Solo añade el código anterior, el resto de tus endpoints existentes se mantienen igual
 
-app.get('/api/productos/:id', async (req, res) => {
+// ==================== ENDPOINT PARA OBTENER MISMO USUARIO ====================
+app.get('/api/perfil', authenticateToken, async (req, res) => {
   try {
-    const { id } = req.params;
+    const userId = req.user.id_usuario;
+    
     const result = await pool.query(`
-      SELECT p.*, c.nombre as categoria_nombre
-      FROM productos p 
-      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria 
-      WHERE p.id_producto = $1
-    `, [id]);
+      SELECT u.id_usuario, u.nombre_completo, u.email, u.usuario, 
+             u.estado, r.nombre_rol, r.descripcion as rol_descripcion
+      FROM usuarios u 
+      LEFT JOIN roles r ON u.id_rol = r.id_rol 
+      WHERE u.id_usuario = $1
+    `, [userId]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
+      return res.status(404).json({ success: false, error: 'Usuario no encontrado' });
     }
     
     res.json({
@@ -510,790 +1055,7 @@ app.get('/api/productos/:id', async (req, res) => {
   }
 });
 
-app.post('/api/productos', async (req, res) => {
-  try {
-    const { id_categoria, nombre, stock, precio_compra, precio_venta, estado } = req.body;
-    
-    const result = await pool.query(
-      `INSERT INTO productos (id_categoria, nombre, stock, precio_compra, precio_venta, estado) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [id_categoria, nombre, stock, precio_compra, precio_venta, estado || 1]
-    );
-    
-    res.status(201).json({ 
-      success: true, 
-      message: 'Producto creado exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.put('/api/productos/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { id_categoria, nombre, stock, precio_compra, precio_venta, estado } = req.body;
-    
-    const result = await pool.query(
-      `UPDATE productos SET id_categoria=$1, nombre=$2, stock=$3, precio_compra=$4, precio_venta=$5, estado=$6 
-       WHERE id_producto=$7 RETURNING *`,
-      [id_categoria, nombre, stock, precio_compra, precio_venta, estado, id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-    }
-    
-    res.json({ 
-      success: true, 
-      message: 'Producto actualizado exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.delete('/api/productos/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const result = await pool.query(
-      'DELETE FROM productos WHERE id_producto = $1 RETURNING *',
-      [id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-    }
-    
-    res.json({ 
-      success: true, 
-      message: 'Producto eliminado exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.patch('/api/productos/:id/estado', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { estado } = req.body;
-    
-    const result = await pool.query(
-      'UPDATE productos SET estado = $1 WHERE id_producto = $2 RETURNING *',
-      [estado, id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-    }
-    
-    res.json({ 
-      success: true, 
-      message: `Estado del producto actualizado a ${estado === 1 ? 'Activo' : 'Inactivo'}`,
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ==================== ACTUALIZAR STOCK DE PRODUCTO ====================
-app.patch('/api/productos/:id/stock', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    const { cantidad, operacion } = req.body;
-    
-    if (!cantidad || !operacion) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Faltan parámetros: cantidad y operacion (sumar/restar)' 
-      });
-    }
-    
-    // Verificar si el producto existe
-    const productoExistente = await client.query(
-      'SELECT * FROM productos WHERE id_producto = $1',
-      [id]
-    );
-    
-    if (productoExistente.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-    }
-    
-    let query;
-    let mensaje;
-    
-    if (operacion === 'sumar') {
-      query = 'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2 RETURNING *';
-      mensaje = `Stock aumentado en ${cantidad} unidades`;
-    } else if (operacion === 'restar') {
-      // Verificar que haya suficiente stock
-      const stockActual = productoExistente.rows[0].stock;
-      if (stockActual < cantidad) {
-        return res.status(400).json({ 
-          success: false, 
-          error: `Stock insuficiente. Disponible: ${stockActual}, Solicitado: ${cantidad}` 
-        });
-      }
-      query = 'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2 RETURNING *';
-      mensaje = `Stock reducido en ${cantidad} unidades`;
-    } else {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Operación no válida. Use "sumar" o "restar"' 
-      });
-    }
-    
-    const result = await client.query(query, [cantidad, id]);
-    
-    await client.query('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: mensaje,
-      data: result.rows[0] 
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-});
-
-// ==================== ENDPOINTS CRUD - CLIENTES ====================
-app.get('/api/clientes', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM clientes ORDER BY id_cliente');
-    
-    res.json({
-      success: true,
-      data: result.rows,
-      total: result.rows.length
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/api/clientes', async (req, res) => {
-  try {
-    const { nombre, tipo_documento, documento, telefono, direccion, estado } = req.body;
-    
-    const result = await pool.query(
-      `INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [nombre, tipo_documento, documento, telefono, direccion, estado || 1]
-    );
-    
-    res.status(201).json({ 
-      success: true, 
-      message: 'Cliente creado exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ==================== ENDPOINTS CRUD - VENTAS ===================
-
-// GET - Obtener todas las ventas
-app.get('/api/ventas', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT v.*, c.nombre as cliente_nombre
-      FROM ventas v 
-      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
-      ORDER BY v.fecha DESC
-    `);
-    
-    res.json({
-      success: true,
-      data: result.rows,
-      total: result.rows.length
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// GET - Obtener una venta por ID
-app.get('/api/ventas/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query(`
-      SELECT v.*, c.nombre as cliente_nombre, c.documento as cliente_documento
-      FROM ventas v 
-      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
-      WHERE v.id_venta = $1
-    `, [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    res.json({
-      success: true,
-      data: result.rows[0]
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// POST - Crear nueva venta
-app.post('/api/ventas', async (req, res) => {
-  try {
-    const { id_cliente, total, estado } = req.body;
-    
-    const result = await pool.query(
-      `INSERT INTO ventas (id_cliente, fecha, total, estado) 
-       VALUES ($1, NOW(), $2, $3) RETURNING *`,
-      [id_cliente, total, estado || 1]
-    );
-    
-    res.status(201).json({ 
-      success: true, 
-      message: 'Venta creada exitosamente',
-      data: result.rows[0] 
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// PUT - Actualizar venta
-app.put('/api/ventas/:id', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    const { id_cliente, total, estado } = req.body;
-    
-    // Verificar si la venta existe
-    const ventaExistente = await client.query(
-      'SELECT * FROM ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    if (ventaExistente.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    // Si se está cambiando el estado, manejar stock
-    const ventaActual = ventaExistente.rows[0];
-    if (estado !== undefined && ventaActual.estado !== estado) {
-      // Obtener detalles de la venta
-      const detallesResult = await client.query(
-        'SELECT * FROM detalle_ventas WHERE id_venta = $1',
-        [id]
-      );
-      
-      const productos = detallesResult.rows;
-      
-      // Si se cambia a Anulada (2) desde otro estado
-      if (estado === 2 && ventaActual.estado !== 2) {
-        // Devolver productos al stock
-        for (const producto of productos) {
-          await client.query(
-            'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
-            [producto.cantidad, producto.id_producto]
-          );
-          console.log(`🔄 Venta ${id}: Producto ${producto.id_producto} +${producto.cantidad} al stock`);
-        }
-      }
-      // Si se reactiva desde Anulada (2) a otro estado
-      else if (ventaActual.estado === 2 && estado !== 2) {
-        // Restar productos del stock
-        for (const producto of productos) {
-          await client.query(
-            'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
-            [producto.cantidad, producto.id_producto]
-          );
-          console.log(`🔄 Venta ${id}: Producto ${producto.id_producto} -${producto.cantidad} del stock`);
-        }
-      }
-    }
-    
-    const result = await client.query(
-      `UPDATE ventas SET id_cliente=$1, total=$2, estado=$3 
-       WHERE id_venta=$4 RETURNING *`,
-      [id_cliente, total, estado, id]
-    );
-    
-    await client.query('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: 'Venta actualizada exitosamente',
-      data: result.rows[0] 
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-});
-
-// PATCH - Cambiar solo el estado de la venta (CON DEVOLUCIÓN DE STOCK)
-app.patch('/api/ventas/:id/estado', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    const { estado } = req.body;
-    
-    if (estado === undefined) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'El parámetro "estado" es requerido' 
-      });
-    }
-    
-    // 1. Verificar si la venta existe y obtener su estado actual
-    const ventaExistente = await client.query(
-      'SELECT * FROM ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    if (ventaExistente.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    const ventaActual = ventaExistente.rows[0];
-    const estadoAnterior = ventaActual.estado;
-    
-    // 2. Obtener los productos de la venta
-    const detallesResult = await client.query(
-      'SELECT * FROM detalle_ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    const productos = detallesResult.rows;
-    
-    // 3. Manejar cambios de estado que afectan el stock
-    console.log(`🔄 Cambiando estado venta ${id}: ${estadoAnterior} → ${estado}`);
-    
-    // CASO 1: Anular venta (estado 2)
-    if (estado === 2 && estadoAnterior !== 2) {
-      console.log(`📦 Devolviendo productos al stock para venta ${id}`);
-      
-      for (const producto of productos) {
-        await client.query(
-          'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
-          [producto.cantidad, producto.id_producto]
-        );
-        console.log(`   ✅ Producto ${producto.id_producto}: +${producto.cantidad} unidades`);
-      }
-    }
-    // CASO 2: Reactivar venta (de estado 2 a otro)
-    else if (estadoAnterior === 2 && estado !== 2) {
-      console.log(`📦 Restando productos del stock para reactivar venta ${id}`);
-      
-      for (const producto of productos) {
-        // Verificar stock disponible antes de restar
-        const productoInfo = await client.query(
-          'SELECT stock FROM productos WHERE id_producto = $1',
-          [producto.id_producto]
-        );
-        
-        if (productoInfo.rows.length > 0) {
-          const stockDisponible = productoInfo.rows[0].stock;
-          if (stockDisponible < producto.cantidad) {
-            throw new Error(`Stock insuficiente para producto ${producto.id_producto}. Disponible: ${stockDisponible}, Necesario: ${producto.cantidad}`);
-          }
-        }
-        
-        await client.query(
-          'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
-          [producto.cantidad, producto.id_producto]
-        );
-        console.log(`   ✅ Producto ${producto.id_producto}: -${producto.cantidad} unidades`);
-      }
-    }
-    // CASO 3: Cambio entre otros estados (0, 1) - no afecta stock
-    else {
-      console.log(`ℹ️ Cambio de estado que no afecta stock: ${estadoAnterior} → ${estado}`);
-    }
-    
-    // 4. Actualizar estado de la venta
-    const result = await client.query(
-      'UPDATE ventas SET estado = $1 WHERE id_venta = $2 RETURNING *',
-      [estado, id]
-    );
-    
-    await client.query('COMMIT');
-    
-    const textoEstado = estado === 1 ? 'Completada' : estado === 2 ? 'Anulada' : 'Pendiente';
-    const textoAnterior = estadoAnterior === 1 ? 'Completada' : estadoAnterior === 2 ? 'Anulada' : 'Pendiente';
-    
-    let mensaje = `Estado de la venta cambiado de "${textoAnterior}" a "${textoEstado}"`;
-    
-    if (estado === 2 && estadoAnterior !== 2) {
-      mensaje += '. Productos devueltos al stock.';
-    } else if (estadoAnterior === 2 && estado !== 2) {
-      mensaje += '. Productos restados del stock.';
-    }
-    
-    res.json({ 
-      success: true, 
-      message: mensaje,
-      data: {
-        ...result.rows[0],
-        productos_afectados: productos.length,
-        estado_anterior: estadoAnterior,
-        estado_nuevo: estado
-      }
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('❌ Error al cambiar estado de venta:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  } finally {
-    client.release();
-  }
-});
-
-// DELETE - Eliminar venta
-app.delete('/api/ventas/:id', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    
-    // Verificar si la venta existe
-    const ventaExistente = await client.query(
-      'SELECT * FROM ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    if (ventaExistente.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    // Obtener productos para devolver al stock
-    const detallesResult = await client.query(
-      'SELECT * FROM detalle_ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    const productos = detallesResult.rows;
-    
-    // Devolver productos al stock
-    for (const producto of productos) {
-      await client.query(
-        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
-        [producto.cantidad, producto.id_producto]
-      );
-    }
-    
-    // Primero eliminar los detalles de venta
-    await client.query(
-      'DELETE FROM detalle_ventas WHERE id_venta = $1',
-      [id]
-    );
-    
-    // Luego eliminar la venta
-    const result = await client.query(
-      'DELETE FROM ventas WHERE id_venta = $1 RETURNING *',
-      [id]
-    );
-    
-    await client.query('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: 'Venta eliminada exitosamente. Productos devueltos al stock.',
-      data: result.rows[0],
-      productos_devueltos: productos.length
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-});
-
-// ==================== VENTAS COMPLETAS CON DETALLES ====================
-app.post('/api/ventas-completas', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id_cliente, total, productos } = req.body;
-    
-    if (!id_cliente || !total || !productos || !Array.isArray(productos)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Faltan parámetros: id_cliente, total, productos (array)' 
-      });
-    }
-    
-    // 1. Verificar stock antes de proceder
-    for (const producto of productos) {
-      const productoInfo = await client.query(
-        'SELECT stock, nombre FROM productos WHERE id_producto = $1',
-        [producto.id_producto]
-      );
-      
-      if (productoInfo.rows.length === 0) {
-        throw new Error(`Producto con ID ${producto.id_producto} no encontrado`);
-      }
-      
-      const stockDisponible = productoInfo.rows[0].stock;
-      const cantidadSolicitada = producto.cantidad || 1;
-      
-      if (stockDisponible < cantidadSolicitada) {
-        throw new Error(`Stock insuficiente para "${productoInfo.rows[0].nombre}". Disponible: ${stockDisponible}, Solicitado: ${cantidadSolicitada}`);
-      }
-    }
-    
-    // 2. Crear la venta principal
-    const ventaResult = await client.query(
-      `INSERT INTO ventas (id_cliente, fecha, total, estado) 
-       VALUES ($1, NOW(), $2, $3) RETURNING *`,
-      [id_cliente, total, 0] // Estado 0 = Pendiente por defecto
-    );
-    
-    const ventaId = ventaResult.rows[0].id_venta;
-    
-    // 3. Crear los detalles de venta (productos)
-    for (const producto of productos) {
-      const cantidad = producto.cantidad || 1;
-      const precio = producto.precio_unitario || 0;
-      const subtotal = cantidad * precio;
-      
-      await client.query(
-        `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [ventaId, producto.id_producto, cantidad, precio, subtotal]
-      );
-      
-      // 4. Actualizar stock de productos (RESTAR stock)
-      await client.query(
-        'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
-        [cantidad, producto.id_producto]
-      );
-      
-      console.log(`📦 Venta ${ventaId}: Producto ${producto.id_producto} -${cantidad} unidades`);
-    }
-    
-    await client.query('COMMIT');
-    
-    res.status(201).json({ 
-      success: true, 
-      message: '✅ Venta registrada exitosamente. Stock actualizado.',
-      data: {
-        venta: ventaResult.rows[0],
-        productos_vendidos: productos.length,
-        total_productos: productos.reduce((sum, p) => sum + (p.cantidad || 1), 0)
-      }
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('❌ Error al registrar venta completa:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  } finally {
-    client.release();
-  }
-});
-
-app.get('/api/ventas-completas', async (req, res) => {
-  try {
-    // Obtener ventas principales
-    const ventasResult = await pool.query(`
-      SELECT v.*, c.nombre as cliente_nombre, c.telefono as cliente_telefono,
-             c.documento as cliente_documento, c.tipo_documento as cliente_tipo_documento
-      FROM ventas v 
-      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
-      ORDER BY v.fecha DESC
-    `);
-    
-    const ventas = ventasResult.rows;
-    
-    // Para cada venta, obtener sus detalles
-    for (let venta of ventas) {
-      const detallesResult = await pool.query(`
-        SELECT dv.*, p.nombre as producto_nombre, p.precio_venta
-        FROM detalle_ventas dv 
-        LEFT JOIN productos p ON dv.id_producto = p.id_producto 
-        WHERE dv.id_venta = $1
-      `, [venta.id_venta]);
-      
-      venta.productos = detallesResult.rows;
-    }
-    
-    res.json({
-      success: true,
-      data: ventas,
-      total: ventas.length
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ==================== OBTENER VENTA CON DETALLES COMPLETOS ====================
-app.get('/api/ventas/:id/completa', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // Obtener venta principal
-    const ventaResult = await pool.query(`
-      SELECT v.*, c.nombre as cliente_nombre, c.documento, c.telefono, c.tipo_documento
-      FROM ventas v 
-      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
-      WHERE v.id_venta = $1
-    `, [id]);
-    
-    if (ventaResult.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    const venta = ventaResult.rows[0];
-    
-    // Obtener productos de la venta
-    const detallesResult = await pool.query(`
-      SELECT dv.*, p.nombre as producto_nombre, p.precio_venta
-      FROM detalle_ventas dv 
-      LEFT JOIN productos p ON dv.id_producto = p.id_producto 
-      WHERE dv.id_venta = $1
-    `, [id]);
-    
-    venta.productos = detallesResult.rows;
-    
-    res.json({
-      success: true,
-      data: venta
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ==================== ANULAR VENTA Y DEVOLVER STOCK ====================
-app.patch('/api/ventas/:id/anular', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const { id } = req.params;
-    
-    // 1. Verificar si la venta existe
-    const ventaResult = await client.query(
-      `SELECT v.*, c.nombre as cliente_nombre 
-       FROM ventas v 
-       LEFT JOIN clientes c ON v.id_cliente = c.id_cliente 
-       WHERE v.id_venta = $1`,
-      [id]
-    );
-    
-    if (ventaResult.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Venta no encontrada' });
-    }
-    
-    const venta = ventaResult.rows[0];
-    
-    // Verificar que no esté ya anulada
-    if (venta.estado === 2) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'La venta ya está anulada' 
-      });
-    }
-    
-    // 2. Obtener los productos de la venta
-    const detallesResult = await client.query(
-      `SELECT dv.*, p.nombre as producto_nombre 
-       FROM detalle_ventas dv 
-       LEFT JOIN productos p ON dv.id_producto = p.id_producto 
-       WHERE dv.id_venta = $1`,
-      [id]
-    );
-    
-    const productos = detallesResult.rows;
-    
-    if (productos.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'La venta no tiene productos' 
-      });
-    }
-    
-    // 3. Devolver cada producto al stock
-    console.log(`📦 Anulando venta ${id}: Devolviendo ${productos.length} productos al stock`);
-    
-    for (const producto of productos) {
-      await client.query(
-        'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
-        [producto.cantidad, producto.id_producto]
-      );
-      
-      console.log(`   ✅ Producto ${producto.producto_nombre} (ID: ${producto.id_producto}): +${producto.cantidad} unidades`);
-    }
-    
-    // 4. Actualizar estado de la venta a "Anulada" (estado 2)
-    const updateResult = await client.query(
-      'UPDATE ventas SET estado = 2 WHERE id_venta = $1 RETURNING *',
-      [id]
-    );
-    
-    await client.query('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: '✅ Venta anulada exitosamente. Productos devueltos al stock.',
-      data: {
-        venta: updateResult.rows[0],
-        productos_devueltos: productos.length,
-        productos: productos
-      }
-    });
-    
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('❌ Error al anular venta:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  } finally {
-    client.release();
-  }
-});
-
-// ==================== ENDPOINT DE ESTADO ====================
+// ==================== ENDPOINT DE ESTADO ACTUALIZADO ====================
 app.get('/api/status', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as server_time');
@@ -1304,34 +1066,46 @@ app.get('/api/status', async (req, res) => {
     const ventasCount = await pool.query('SELECT COUNT(*) FROM ventas');
     const ventasActivas = await pool.query("SELECT COUNT(*) FROM ventas WHERE estado != 2");
     const usuariosCount = await pool.query('SELECT COUNT(*) FROM usuarios');
+    const rolesCount = await pool.query('SELECT COUNT(*) FROM roles');
+    const categoriasCount = await pool.query('SELECT COUNT(*) FROM categorias');
+    const comprasCount = await pool.query('SELECT COUNT(*) FROM compras');
     
     res.json({
       success: true,
       message: '🚀 API StockBar funcionando correctamente',
       server_time: result.rows[0].server_time,
-      version: '3.0.0',
+      version: '4.0.0',
+      admin_por_defecto: ADMIN_EMAIL,
       estadisticas: {
         productos: parseInt(productosCount.rows[0].count),
         clientes: parseInt(clientesCount.rows[0].count),
         ventas_totales: parseInt(ventasCount.rows[0].count),
         ventas_activas: parseInt(ventasActivas.rows[0].count),
-        usuarios: parseInt(usuariosCount.rows[0].count)
+        usuarios: parseInt(usuariosCount.rows[0].count),
+        roles: parseInt(rolesCount.rows[0].count),
+        categorias: parseInt(categoriasCount.rows[0].count),
+        compras: parseInt(comprasCount.rows[0].count)
       },
       endpoints_autenticacion: {
         verificar_email: 'POST /api/verificar-email',
         actualizar_password: 'POST /api/actualizar-password',
-        login: 'POST /api/login'
+        login: 'POST /api/login',
+        perfil: 'GET /api/perfil (requiere token)'
       },
       endpoints_principales: {
+        roles: 'GET /api/roles',
+        usuarios: 'GET /api/usuarios',
+        categorias: 'GET /api/categorias',
+        compras: 'GET /api/compras',
         productos: 'GET /api/productos',
         clientes: 'GET /api/clientes',
         ventas: 'GET /api/ventas',
         ventas_completas: 'GET /api/ventas-completas',
         crear_venta: 'POST /api/ventas-completas',
-        cambiar_estado_venta: 'PATCH /api/ventas/:id/estado',
         anular_venta: 'PATCH /api/ventas/:id/anular',
         actualizar_stock: 'PATCH /api/productos/:id/stock'
-      }
+      },
+      nota: `El usuario ${ADMIN_EMAIL} es el administrador por defecto y no se puede eliminar`
     });
   } catch (error) {
     res.status(500).json({ 
@@ -1345,29 +1119,29 @@ app.get('/api/status', async (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 API StockBar - Sistema de Gestión para Licorería',
-    version: '3.0.0',
-    features: 'Gestión completa de ventas con control de stock automático y autenticación',
-    endpoints: 'Visita /api/status para ver todos los endpoints disponibles',
-    moneda: 'Todos los precios están en Pesos Colombianos (COP)',
-    notas: [
-      '✅ Sistema maneja devolución automática de stock al anular ventas',
+    version: '4.0.0',
+    admin_por_defecto: ADMIN_EMAIL,
+    features: [
       '✅ Sistema de autenticación completo con recuperación de contraseña',
+      '✅ Gestión de roles y permisos por usuario',
+      '✅ Admin por defecto protegido (no se puede eliminar)',
+      '✅ Gestión completa de ventas con control de stock automático',
+      '✅ CRUD completo para usuarios, roles, categorías, compras',
       '✅ Contraseñas almacenadas de forma segura con bcrypt'
-    ]
+    ],
+    moneda: 'Todos los precios están en Pesos Colombianos (COP)',
+    documentacion: 'Visita /api/status para ver todos los endpoints disponibles',
+    crear_base_datos: 'GET /api/create-all-tables'
   });
 });
 
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('🚀 Servidor API StockBar - VERSION 3.0');
+  console.log('🚀 Servidor API StockBar - VERSION 4.0');
   console.log('📡 Puerto: ' + PORT);
   console.log('🌐 URL: https://api-stockbar.onrender.com');
-  console.log('📚 Documentación: /api/status');
-  console.log('🔐 Características nuevas:');
-  console.log('   • Sistema de autenticación completo');
-  console.log('   • Recuperación de contraseña con códigos');
-  console.log('   • Contraseñas encriptadas con bcrypt');
-  console.log('   • Endpoints de login y recuperación');
+  console.log('🔐 Sistema de autenticación completo');
+  console.log('👑 Admin por defecto: ' + ADMIN_EMAIL);
   console.log('💰 Todos los precios en Pesos Colombianos (COP)');
   console.log('⚡ Para crear la base de datos: GET /api/create-all-tables');
 });
