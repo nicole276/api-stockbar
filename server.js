@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 
 const app = express();
 
-// ✅ CONEXIÓN A TU BASE DE DATOS (NO CAMBIES ESTO)
+// ✅ CONEXIÓN A TU BASE DE DATOS
 const pool = new Pool({
   connectionString: 'postgresql://stockbar_user:0EndlOqYMUMDsuYAlnjyQ35Vzs3rFh1V@dpg-d4dmar9r0fns73eplq4g-a/stockbar_db',
   ssl: {
@@ -14,14 +14,8 @@ const pool = new Pool({
 });
 
 // ==================== CONFIGURACIÓN UNIVERSAL ====================
-
-// Configuración CORS para MÓVIL + WEB
 const corsOptions = {
-  origin: function (origin, callback) {
-    // PERMITIR TODOS LOS ORÍGENES durante desarrollo y producción
-    // Esto funciona para: Cordova, Web, Postman, etc.
-    callback(null, true);
-  },
+  origin: '*', // Permitir todos los orígenes
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   credentials: true,
@@ -30,46 +24,32 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // IMPORTANTE para preflight
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-
-// Almacenamiento temporal de códigos
-const verificationCodes = new Map();
 const ADMIN_EMAIL = 'thebar752@gmail.com';
 
-// ==================== MIDDLEWARE DE AUTENTICACIÓN MEJORADO ====================
+// ==================== MIDDLEWARE DE AUTENTICACIÓN ====================
 const authenticateToken = async (req, res, next) => {
   try {
-    console.log('🔍 Autenticando petición a:', req.path);
-    console.log('📋 Headers recibidos:', req.headers);
-    
-    // Obtener token de múltiples fuentes
     let token = req.headers['authorization'];
     
     if (token && token.startsWith('Bearer ')) {
       token = token.slice(7);
     } else if (req.query.token) {
-      // También aceptar token por query (útil para pruebas)
       token = req.query.token;
     }
     
     if (!token) {
-      console.log('⚠️ No hay token en la petición');
       return res.status(401).json({ 
         success: false, 
         message: 'Token requerido. Envía: Authorization: Bearer TU_TOKEN' 
       });
     }
     
-    console.log('🔑 Token recibido:', token.substring(0, 20) + '...');
-    
-    // Decodificar token Base64
     try {
       const decoded = Buffer.from(token, 'base64').toString('ascii');
-      console.log('🔑 Token decodificado:', decoded);
-      
       const [userId] = decoded.split(':');
       
       if (!userId || isNaN(userId)) {
@@ -79,7 +59,6 @@ const authenticateToken = async (req, res, next) => {
         });
       }
       
-      // Buscar usuario
       const result = await pool.query(
         `SELECT u.*, r.nombre_rol 
          FROM usuarios u 
@@ -96,11 +75,9 @@ const authenticateToken = async (req, res, next) => {
       }
       
       req.user = result.rows[0];
-      console.log(`✅ Usuario autenticado: ${req.user.email} (ID: ${req.user.id_usuario})`);
       next();
       
     } catch (decodeError) {
-      console.error('❌ Error decodificando token:', decodeError.message);
       return res.status(401).json({ 
         success: false, 
         message: 'Token inválido o expirado' 
@@ -116,19 +93,30 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== ENDPOINTS PÚBLICOS ====================
+// ==================== ENDPOINTS PÚBLICOS (SIN TOKEN) ====================
 
 // Endpoint raíz
 app.get('/', (req, res) => {
   res.json({
     success: true,
     message: '🚀 API StockBar - Universal (Móvil + Web)',
-    version: '6.0.0',
+    version: '7.0.0',
     admin_email: ADMIN_EMAIL,
-    documentation: {
-      login: 'POST /api/login',
-      endpoints: 'GET /api/status',
-      notes: 'Todos los CRUD requieren token (excepto login y status)'
+    endpoints: {
+      public: {
+        status: 'GET /api/status',
+        test: 'GET /api/test-frontend',
+        login: 'POST /api/login',
+        clientes: 'GET /api/public/clientes',
+        productos: 'GET /api/public/productos',
+        ventas: 'GET /api/public/ventas'
+      },
+      private: {
+        note: 'Requieren token obtenido en /api/login',
+        clientes: 'GET /api/clientes',
+        productos: 'GET /api/productos',
+        ventas: 'GET /api/ventas'
+      }
     }
   });
 });
@@ -150,7 +138,7 @@ app.get('/api/status', async (req, res) => {
       system: {
         platform: 'Universal API (Móvil + Web)',
         cors: 'Configurado para todos los orígenes',
-        authentication: 'Token Bearer requerido'
+        authentication: 'Token Bearer requerido para endpoints privados'
       }
     });
   } catch (error) {
@@ -173,7 +161,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Buscar usuario
     const result = await pool.query(
       `SELECT u.*, r.nombre_rol 
        FROM usuarios u 
@@ -190,9 +177,8 @@ app.post('/api/login', async (req, res) => {
     }
     
     const user = result.rows[0];
-    
-    // Verificar contraseña
     const validPassword = await bcrypt.compare(password, user.contraseña);
+    
     if (!validPassword) {
       return res.status(401).json({ 
         success: false, 
@@ -200,10 +186,7 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Generar token simple
     const token = Buffer.from(`${user.id_usuario}:${Date.now()}`).toString('base64');
-    
-    // Eliminar contraseña de la respuesta
     delete user.contraseña;
     
     res.json({
@@ -223,238 +206,9 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ==================== ENDPOINTS CRUD (CON AUTENTICACIÓN) ====================
-
-// 1. PRODUCTOS
-app.get('/api/productos', authenticateToken, async (req, res) => {
-  try {
-    console.log(`📦 Obteniendo productos para usuario: ${req.user.email}`);
-    
-    const result = await pool.query(`
-      SELECT p.id_producto, p.nombre, p.stock, p.precio_compra, p.precio_venta,
-             c.nombre as categoria, p.estado,
-             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM productos p
-      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
-      ORDER BY p.nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} productos encontrados`,
-      data: result.rows,
-      total: result.rows.length
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo productos:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo productos' 
-    });
-  }
-});
-
-// 2. CLIENTES
-app.get('/api/clientes', authenticateToken, async (req, res) => {
-  try {
-    console.log(`👥 Obteniendo clientes para usuario: ${req.user.email}`);
-    
-    const result = await pool.query(`
-      SELECT id_cliente, nombre, tipo_documento, documento, 
-             telefono, direccion, email, estado,
-             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM clientes
-      ORDER BY nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} clientes encontrados`,
-      data: result.rows,
-      total: result.rows.length
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo clientes:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo clientes' 
-    });
-  }
-});
-
-// 3. VENTAS
-app.get('/api/ventas', authenticateToken, async (req, res) => {
-  try {
-    console.log(`💰 Obteniendo ventas para usuario: ${req.user.email}`);
-    
-    const result = await pool.query(`
-      SELECT v.id_venta, v.fecha, v.total, v.estado,
-             c.nombre as cliente_nombre, c.documento as cliente_documento,
-             CASE WHEN v.estado = 1 THEN 'Completada' 
-                  WHEN v.estado = 0 THEN 'Pendiente'
-                  WHEN v.estado = 2 THEN 'Anulada'
-                  ELSE 'Desconocido' END as estado_texto
-      FROM ventas v
-      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
-      ORDER BY v.fecha DESC
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} ventas encontradas`,
-      data: result.rows,
-      total: result.rows.length
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo ventas:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo ventas' 
-    });
-  }
-});
-
-// 4. ROLES (para probar que todo funciona)
-app.get('/api/roles', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT id_rol, nombre_rol, descripcion, estado,
-             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM roles
-      ORDER BY nombre_rol
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} roles encontrados`,
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo roles:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo roles' 
-    });
-  }
-});
-
-// 5. USUARIOS
-app.get('/api/usuarios', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT u.id_usuario, u.nombre_completo, u.email, u.usuario, u.estado,
-             r.nombre_rol,
-             CASE WHEN u.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM usuarios u
-      LEFT JOIN roles r ON u.id_rol = r.id_rol
-      ORDER BY u.nombre_completo
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} usuarios encontrados`,
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo usuarios:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo usuarios' 
-    });
-  }
-});
-
-// 6. CATEGORÍAS
-app.get('/api/categorias', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT id_categoria, nombre, descripcion, estado,
-             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM categorias
-      ORDER BY nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} categorías encontradas`,
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo categorías:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo categorías' 
-    });
-  }
-});
-
-// 7. PROVEEDORES
-app.get('/api/proveedores', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT id_proveedor, nombre_razon_social, documento, 
-             contacto, direccion, email, estado,
-             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
-      FROM proveedores
-      ORDER BY nombre_razon_social
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} proveedores encontrados`,
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo proveedores:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo proveedores' 
-    });
-  }
-});
-
-// 8. COMPRAS
-app.get('/api/compras', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT c.id_compra, c.fecha, c.total, c.numero_factura, c.estado,
-             p.nombre_razon_social as proveedor_nombre,
-             CASE WHEN c.estado = 1 THEN 'Activa' 
-                  WHEN c.estado = 0 THEN 'Anulada'
-                  ELSE 'Desconocida' END as estado_texto
-      FROM compras c
-      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor
-      ORDER BY c.fecha DESC
-    `);
-    
-    res.json({
-      success: true,
-      message: `✅ ${result.rows.length} compras encontradas`,
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('❌ Error obteniendo compras:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo compras' 
-    });
-  }
-});
-
-// ==================== ENDPOINT DE PRUEBA PARA FRONTEND ====================
-
 // Endpoint para probar conexión desde el frontend
 app.get('/api/test-frontend', async (req, res) => {
   try {
-    // Probar base de datos
     const dbTest = await pool.query('SELECT COUNT(*) as total FROM productos');
     
     res.json({
@@ -483,6 +237,335 @@ app.get('/api/test-frontend', async (req, res) => {
   }
 });
 
+// ==================== ENDPOINTS PÚBLICOS DE DATOS (SIN TOKEN) ====================
+
+// 1. CLIENTES PÚBLICOS
+app.get('/api/public/clientes', async (req, res) => {
+  try {
+    console.log('📡 Obteniendo clientes (público)');
+    
+    const result = await pool.query(`
+      SELECT id_cliente, nombre, tipo_documento, documento, 
+             telefono, direccion, email, estado,
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM clientes
+      ORDER BY nombre
+      LIMIT 100
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} clientes encontrados`,
+      note: 'Endpoint público - No requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo clientes públicos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo clientes' 
+    });
+  }
+});
+
+// 2. PRODUCTOS PÚBLICOS
+app.get('/api/public/productos', async (req, res) => {
+  try {
+    console.log('📡 Obteniendo productos (público)');
+    
+    const result = await pool.query(`
+      SELECT p.id_producto, p.nombre, p.stock, p.precio_compra, p.precio_venta,
+             c.nombre as categoria, p.estado,
+             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
+      ORDER BY p.nombre
+      LIMIT 100
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} productos encontrados`,
+      note: 'Endpoint público - No requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo productos públicos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo productos' 
+    });
+  }
+});
+
+// 3. VENTAS PÚBLICAS
+app.get('/api/public/ventas', async (req, res) => {
+  try {
+    console.log('📡 Obteniendo ventas (público)');
+    
+    const result = await pool.query(`
+      SELECT v.id_venta, v.fecha, v.total, v.estado,
+             c.nombre as cliente_nombre, c.documento as cliente_documento,
+             CASE WHEN v.estado = 1 THEN 'Completada' 
+                  WHEN v.estado = 0 THEN 'Pendiente'
+                  WHEN v.estado = 2 THEN 'Anulada'
+                  ELSE 'Desconocido' END as estado_texto
+      FROM ventas v
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
+      ORDER BY v.fecha DESC
+      LIMIT 50
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} ventas encontradas`,
+      note: 'Endpoint público - No requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo ventas públicas:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo ventas' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS PRIVADOS (CON AUTENTICACIÓN) ====================
+
+// 1. CLIENTES PRIVADOS
+app.get('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    console.log(`👥 Obteniendo clientes para usuario: ${req.user.email}`);
+    
+    const result = await pool.query(`
+      SELECT id_cliente, nombre, tipo_documento, documento, 
+             telefono, direccion, email, estado,
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM clientes
+      ORDER BY nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} clientes encontrados`,
+      note: 'Endpoint privado - Requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo clientes:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo clientes' 
+    });
+  }
+});
+
+// 2. PRODUCTOS PRIVADOS
+app.get('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📦 Obteniendo productos para usuario: ${req.user.email}`);
+    
+    const result = await pool.query(`
+      SELECT p.id_producto, p.nombre, p.stock, p.precio_compra, p.precio_venta,
+             c.nombre as categoria, p.estado,
+             CASE WHEN p.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
+      ORDER BY p.nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} productos encontrados`,
+      note: 'Endpoint privado - Requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo productos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo productos' 
+    });
+  }
+});
+
+// 3. VENTAS PRIVADAS
+app.get('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    console.log(`💰 Obteniendo ventas para usuario: ${req.user.email}`);
+    
+    const result = await pool.query(`
+      SELECT v.id_venta, v.fecha, v.total, v.estado,
+             c.nombre as cliente_nombre, c.documento as cliente_documento,
+             CASE WHEN v.estado = 1 THEN 'Completada' 
+                  WHEN v.estado = 0 THEN 'Pendiente'
+                  WHEN v.estado = 2 THEN 'Anulada'
+                  ELSE 'Desconocido' END as estado_texto
+      FROM ventas v
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
+      ORDER BY v.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} ventas encontradas`,
+      note: 'Endpoint privado - Requiere autenticación',
+      data: result.rows,
+      total: result.rows.length
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo ventas:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo ventas' 
+    });
+  }
+});
+
+// 4. ROLES PRIVADOS
+app.get('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id_rol, nombre_rol, descripcion, estado,
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM roles
+      ORDER BY nombre_rol
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} roles encontrados`,
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo roles:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo roles' 
+    });
+  }
+});
+
+// 5. USUARIOS PRIVADOS
+app.get('/api/usuarios', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id_usuario, u.nombre_completo, u.email, u.usuario, u.estado,
+             r.nombre_rol,
+             CASE WHEN u.estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM usuarios u
+      LEFT JOIN roles r ON u.id_rol = r.id_rol
+      ORDER BY u.nombre_completo
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} usuarios encontrados`,
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo usuarios:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo usuarios' 
+    });
+  }
+});
+
+// 6. CATEGORÍAS PRIVADAS
+app.get('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id_categoria, nombre, descripcion, estado,
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM categorias
+      ORDER BY nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} categorías encontradas`,
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo categorías:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo categorías' 
+    });
+  }
+});
+
+// 7. PROVEEDORES PRIVADOS
+app.get('/api/proveedores', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id_proveedor, nombre_razon_social, documento, 
+             contacto, direccion, email, estado,
+             CASE WHEN estado = 1 THEN 'Activo' ELSE 'Inactivo' END as estado_texto
+      FROM proveedores
+      ORDER BY nombre_razon_social
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} proveedores encontrados`,
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo proveedores:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo proveedores' 
+    });
+  }
+});
+
+// 8. COMPRAS PRIVADAS
+app.get('/api/compras', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.id_compra, c.fecha, c.total, c.numero_factura, c.estado,
+             p.nombre_razon_social as proveedor_nombre,
+             CASE WHEN c.estado = 1 THEN 'Activa' 
+                  WHEN c.estado = 0 THEN 'Anulada'
+                  ELSE 'Desconocida' END as estado_texto
+      FROM compras c
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor
+      ORDER BY c.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} compras encontradas`,
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Error obteniendo compras:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo compras' 
+    });
+  }
+});
+
 // ==================== FUNCIÓN PARA CREAR ADMIN SI NO EXISTE ====================
 async function ensureAdminExists() {
   try {
@@ -496,7 +579,6 @@ async function ensureAdminExists() {
     if (adminCheck.rows.length === 0) {
       console.log('⚠️ Admin no encontrado. Creando...');
       
-      // Buscar o crear rol Administrador
       let rolResult = await pool.query(
         'SELECT id_rol FROM roles WHERE nombre_rol = $1',
         ['Administrador']
@@ -513,7 +595,6 @@ async function ensureAdminExists() {
         idRol = newRol.rows[0].id_rol;
       }
       
-      // Crear usuario admin
       const hashedPassword = await bcrypt.hash('admin123', 10);
       await pool.query(
         `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado)
@@ -534,29 +615,26 @@ async function ensureAdminExists() {
 // ==================== INICIAR SERVIDOR ====================
 app.listen(PORT, '0.0.0.0', async () => {
   console.log('='.repeat(60));
-  console.log('🚀 API STOCKBAR - VERSIÓN UNIVERSAL 6.0');
+  console.log('🚀 API STOCKBAR - VERSIÓN 7.0 (CON ENDPOINTS PÚBLICOS)');
   console.log('='.repeat(60));
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🔗 URL Render: https://api-stockbar.onrender.com`);
   console.log(`🔐 Admin: ${ADMIN_EMAIL} (password: admin123)`);
   console.log('='.repeat(60));
-  console.log('📱 COMPATIBLE CON:');
-  console.log('   • Aplicaciones móviles (Cordova, React Native, etc.)');
-  console.log('   • Aplicaciones web (React, Angular, Vue, etc.)');
-  console.log('   • Postman / Insomnia');
+  console.log('🔓 ENDPOINTS PÚBLICOS (SIN TOKEN):');
+  console.log('   GET  /api/public/clientes  - Clientes (público)');
+  console.log('   GET  /api/public/productos - Productos (público)');
+  console.log('   GET  /api/public/ventas    - Ventas (público)');
+  console.log('   GET  /api/status           - Estado sistema');
+  console.log('   POST /api/login            - Login (obtener token)');
   console.log('='.repeat(60));
-  console.log('🔧 ENDPOINTS PRINCIPALES:');
-  console.log('   GET  /                    - Info API');
-  console.log('   GET  /api/status          - Estado sistema');
-  console.log('   GET  /api/test-frontend   - Prueba frontend');
-  console.log('   POST /api/login           - Login (obtener token)');
-  console.log('   GET  /api/productos       - Productos (requiere token)');
-  console.log('   GET  /api/clientes        - Clientes (requiere token)');
-  console.log('   GET  /api/ventas          - Ventas (requiere token)');
+  console.log('🔐 ENDPOINTS PRIVADOS (CON TOKEN):');
+  console.log('   GET  /api/clientes         - Clientes (completo)');
+  console.log('   GET  /api/productos        - Productos (completo)');
+  console.log('   GET  /api/ventas           - Ventas (completo)');
   console.log('='.repeat(60));
   
-  // Crear admin si no existe
   await ensureAdminExists();
   
   console.log('✅ Servidor listo. Esperando peticiones...');
