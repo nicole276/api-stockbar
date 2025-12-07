@@ -2,12 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
+require('dotenv').config();
 
 const app = express();
 
 // ✅ CONEXIÓN A LA BASE DE DATOS
 const pool = new Pool({
-  connectionString: 'postgresql://stockbar_user:0EndlOqYMUMDsuYAlnjyQ35Vzs3rFh1V@dpg-d4dmar9r0fns73eplq4g-a/stockbar_db',
+  connectionString: process.env.DATABASE_URL || 'postgresql://stockbar_user:0EndlOqYMUMDsuYAlnjyQ35Vzs3rFh1V@dpg-d4dmar9r0fns73eplq4g-a/stockbar_db',
   ssl: { rejectUnauthorized: false }
 });
 
@@ -21,15 +22,16 @@ const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '✅ API STOCKBAR - VERSIÓN 5.0',
-    version: '5.0.0',
+    message: '✅ API STOCKBAR - VERSIÓN 6.0 (TABLAS MINÚSCULAS)',
+    version: '6.0.0',
     status: 'operacional',
     timestamp: new Date().toISOString(),
     endpoints: {
       public: {
         root: 'GET /',
         login: 'POST /api/login',
-        test: 'GET /api/test'
+        test: 'GET /api/test',
+        'check-db': 'GET /api/check-db'
       },
       protected: {
         ventas: 'GET /api/ventas (requiere token)',
@@ -38,16 +40,6 @@ app.get('/', (req, res) => {
         compras: 'GET /api/compras (requiere token)'
       }
     }
-  });
-});
-
-// ==================== ENDPOINT DE PRUEBA ====================
-app.get('/api/test', (req, res) => {
-  res.json({
-    success: true,
-    message: '✅ API funcionando correctamente',
-    timestamp: new Date().toISOString(),
-    database: 'Conectada a PostgreSQL'
   });
 });
 
@@ -71,9 +63,9 @@ const authenticateToken = async (req, res, next) => {
     const decoded = Buffer.from(token, 'base64').toString('ascii');
     const [userId] = decoded.split(':');
     
-    // Buscar usuario
+    // Buscar usuario (TABLA EN MINÚSCULAS)
     const result = await pool.query(
-      'SELECT * FROM "Usuarios" WHERE id_usuario = $1 AND estado = 1',
+      'SELECT * FROM usuarios WHERE id_usuario = $1 AND estado = 1',
       [parseInt(userId)]
     );
     
@@ -103,7 +95,6 @@ app.post('/api/login', async (req, res) => {
     
     console.log('🔐 Login attempt:', email);
     
-    // Validación básica
     if (!email || !password) {
       return res.status(400).json({ 
         success: false, 
@@ -111,9 +102,9 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Buscar usuario
+    // Buscar usuario (TABLA EN MINÚSCULAS)
     const result = await pool.query(
-      'SELECT * FROM "Usuarios" WHERE email = $1',
+      'SELECT * FROM usuarios WHERE email = $1',
       [email]
     );
     
@@ -127,7 +118,7 @@ app.post('/api/login', async (req, res) => {
     const user = result.rows[0];
     const dbPassword = user.contraseña || '';
     
-    console.log('🔍 Usuario encontrado:', user.email);
+    console.log('✅ Usuario encontrado:', user.email);
     
     // ✅ VERIFICACIÓN DE CONTRASEÑA
     let validPassword = false;
@@ -195,74 +186,439 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ==================== ROLES ====================
+// ==================== ENDPOINT DE PRUEBA ====================
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: '✅ API funcionando correctamente',
+    timestamp: new Date().toISOString(),
+    database: 'Conectada a PostgreSQL (tablas en minúsculas)'
+  });
+});
 
-// LISTAR ROLES
-app.get('/api/roles', authenticateToken, async (req, res) => {
+// ==================== VERIFICACIÓN DE BASE DE DATOS ====================
+app.get('/api/check-db', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM "Roles" ORDER BY id_rol');
+    // 1. Ver todas las tablas
+    const tables = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+    
+    // 2. Ver estructura de tabla usuarios
+    const usuariosColumns = await pool.query(`
+      SELECT column_name, data_type 
+      FROM information_schema.columns 
+      WHERE table_name = 'usuarios' 
+      ORDER BY ordinal_position
+    `);
+    
+    // 3. Ver datos de usuarios
+    const usuariosData = await pool.query('SELECT id_usuario, email, nombre_completo FROM usuarios LIMIT 5');
+    
+    // 4. Verificar conexión
+    const connectionTest = await pool.query('SELECT NOW() as server_time, version() as pg_version');
+    
     res.json({
       success: true,
-      message: `${result.rows.length} roles encontrados`,
-      data: result.rows
+      tables: tables.rows.map(t => t.table_name),
+      usuarios_columns: usuariosColumns.rows,
+      usuarios_data: usuariosData.rows,
+      connection: connectionTest.rows[0],
+      message: '✅ Base de datos conectada correctamente',
+      timestamp: new Date().toISOString()
     });
+    
   } catch (error) {
-    console.error('Error roles:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
+    res.json({
+      success: false,
+      error: error.message,
+      message: '❌ Error conectando a la base de datos'
+    });
   }
 });
 
-// CREAR ROL
-app.post('/api/roles', authenticateToken, async (req, res) => {
+// ==================== CLIENTES ====================
+
+// LISTAR CLIENTES (TABLA EN MINÚSCULAS)
+app.get('/api/clientes', authenticateToken, async (req, res) => {
   try {
-    const { nombre_rol, descripcion } = req.body;
+    console.log(`📡 ${req.user.email} solicitando clientes`);
     
-    if (!nombre_rol) {
+    const result = await pool.query(`
+      SELECT * FROM clientes 
+      WHERE estado = 1 
+      ORDER BY nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} clientes encontrados`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error clientes:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// CREAR CLIENTE (TABLA EN MINÚSCULAS)
+app.post('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    const { nombre, tipo_documento, documento, telefono, direccion } = req.body;
+    
+    if (!nombre) {
       return res.status(400).json({ success: false, message: 'Nombre requerido' });
     }
     
     const result = await pool.query(
-      'INSERT INTO "Roles" (nombre_rol, descripcion, estado) VALUES ($1, $2, 1) RETURNING *',
-      [nombre_rol, descripcion]
+      `INSERT INTO clientes (nombre, tipo_documento, documento, telefono, direccion, estado) 
+       VALUES ($1, $2, $3, $4, $5, 1) 
+       RETURNING *`,
+      [nombre, tipo_documento, documento, telefono, direccion]
     );
+    
+    console.log(`✅ Cliente "${nombre}" creado por ${req.user.email}`);
     
     res.status(201).json({
       success: true,
-      message: 'Rol creado',
+      message: '✅ Cliente creado exitosamente',
       data: result.rows[0]
     });
+    
   } catch (error) {
-    console.error('Error crear rol:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
+    console.error('Error crear cliente:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
   }
 });
 
-// VER DETALLE ROL
-app.get('/api/roles/:id', authenticateToken, async (req, res) => {
+// VER DETALLE CLIENTE
+app.get('/api/clientes/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('SELECT * FROM "Roles" WHERE id_rol = $1', [id]);
+    
+    const result = await pool.query(
+      'SELECT * FROM clientes WHERE id_cliente = $1',
+      [id]
+    );
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Rol no encontrado' });
+      return res.status(404).json({
+        success: false,
+        message: 'Cliente no encontrado'
+      });
     }
     
-    res.json({ success: true, data: result.rows[0] });
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+    
   } catch (error) {
-    console.error('Error detalle rol:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
+    console.error('Error detalle cliente:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// ==================== PRODUCTOS ====================
+
+// LISTAR PRODUCTOS (TABLAS EN MINÚSCULAS)
+app.get('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} solicitando productos`);
+    
+    const result = await pool.query(`
+      SELECT p.*, c.nombre as categoria_nombre 
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
+      WHERE p.estado = 1 
+      ORDER BY p.nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} productos encontrados`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error productos:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// CREAR PRODUCTO (TABLA EN MINÚSCULAS)
+app.post('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const { nombre, id_categoria, stock = 0, precio_compra, precio_venta } = req.body;
+    
+    if (!nombre || !precio_venta) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nombre y precio de venta son requeridos'
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO productos (nombre, id_categoria, stock, precio_compra, precio_venta, estado) 
+       VALUES ($1, $2, $3, $4, $5, 1) 
+       RETURNING *`,
+      [nombre, id_categoria, stock, precio_compra || 0, precio_venta]
+    );
+    
+    console.log(`✅ Producto "${nombre}" creado por ${req.user.email}`);
+    
+    res.status(201).json({
+      success: true,
+      message: '✅ Producto creado exitosamente',
+      data: result.rows[0]
+    });
+    
+  } catch (error) {
+    console.error('Error crear producto:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// ==================== VENTAS ====================
+
+// LISTAR VENTAS (TABLAS EN MINÚSCULAS)
+app.get('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} solicitando ventas`);
+    
+    const result = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre
+      FROM ventas v
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
+      ORDER BY v.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} ventas encontradas`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error ventas:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// DETALLES DE VENTA (TABLAS EN MINÚSCULAS)
+app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`📡 ${req.user.email} solicitando detalles de venta ${id}`);
+    
+    const result = await pool.query(`
+      SELECT dv.*, p.nombre as nombre_producto
+      FROM detalle_ventas dv
+      LEFT JOIN productos p ON dv.id_producto = p.id_producto
+      WHERE dv.id_venta = $1
+      ORDER BY dv.id_det_venta
+    `, [id]);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} detalles encontrados`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error detalles venta:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// CREAR VENTA (TABLAS EN MINÚSCULAS)
+app.post('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} creando nueva venta`);
+    
+    const { id_cliente, total, fecha, estado = 2, detalles } = req.body;
+    
+    if (!id_cliente || !total || !detalles || !Array.isArray(detalles) || detalles.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Datos incompletos: Se requiere cliente, total y al menos un producto'
+      });
+    }
+    
+    await pool.query('BEGIN');
+    
+    try {
+      // Insertar venta
+      const ventaResult = await pool.query(
+        `INSERT INTO ventas (id_cliente, total, fecha, estado) 
+         VALUES ($1, $2, $3, $4) 
+         RETURNING id_venta`,
+        [id_cliente, total, fecha || new Date(), estado]
+      );
+      
+      const idVenta = ventaResult.rows[0].id_venta;
+      
+      // Insertar detalles
+      for (const detalle of detalles) {
+        await pool.query(
+          `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [idVenta, detalle.id_producto, detalle.cantidad, detalle.precio, detalle.subtotal]
+        );
+        
+        // Actualizar stock (solo si no está anulada)
+        if (estado !== 3) {
+          await pool.query(
+            `UPDATE productos SET stock = stock - $1 WHERE id_producto = $2`,
+            [detalle.cantidad, detalle.id_producto]
+          );
+        }
+      }
+      
+      await pool.query('COMMIT');
+      
+      console.log(`✅ Venta ${idVenta} creada exitosamente`);
+      
+      res.status(201).json({
+        success: true,
+        message: '✅ Venta creada exitosamente',
+        data: { id_venta: idVenta }
+      });
+      
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Error crear venta:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error al crear venta: ' + error.message
+    });
+  }
+});
+
+// ==================== COMPRAS ====================
+
+// LISTAR COMPRAS (TABLAS EN MINÚSCULAS)
+app.get('/api/compras', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} solicitando compras`);
+    
+    const result = await pool.query(`
+      SELECT c.*, p.nombre_razon_social as proveedor_nombre
+      FROM compras c
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor
+      ORDER BY c.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} compras encontradas`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error compras:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// ==================== CATEGORÍAS ====================
+
+// LISTAR CATEGORÍAS (TABLA EN MINÚSCULAS)
+app.get('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} solicitando categorías`);
+    
+    const result = await pool.query(`
+      SELECT * FROM categorias 
+      WHERE estado = 1 
+      ORDER BY nombre
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} categorías encontradas`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error categorías:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// ==================== ROLES ====================
+
+// LISTAR ROLES (TABLA EN MINÚSCULAS)
+app.get('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} solicitando roles`);
+    
+    const result = await pool.query(`
+      SELECT * FROM roles 
+      ORDER BY id_rol
+    `);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} roles encontrados`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error roles:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
   }
 });
 
 // ==================== USUARIOS ====================
 
-// LISTAR USUARIOS
+// LISTAR USUARIOS (TABLA EN MINÚSCULAS)
 app.get('/api/usuarios', authenticateToken, async (req, res) => {
   try {
+    console.log(`📡 ${req.user.email} solicitando usuarios`);
+    
     const result = await pool.query(`
       SELECT u.*, r.nombre_rol 
-      FROM "Usuarios" u
-      LEFT JOIN "Roles" r ON u.id_rol = r.id_rol
+      FROM usuarios u
+      LEFT JOIN roles r ON u.id_rol = r.id_rol
       ORDER BY u.id_usuario DESC
     `);
     
@@ -274,466 +630,143 @@ app.get('/api/usuarios', authenticateToken, async (req, res) => {
     
     res.json({
       success: true,
-      message: `${usuariosSinPassword.length} usuarios encontrados`,
+      message: `✅ ${usuariosSinPassword.length} usuarios encontrados`,
       data: usuariosSinPassword
     });
+    
   } catch (error) {
     console.error('Error usuarios:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR USUARIO
-app.post('/api/usuarios', authenticateToken, async (req, res) => {
-  try {
-    const { email, password, confirm_password, nombre_completo, usuario, id_rol = 2 } = req.body;
-    
-    if (!email || !password || !confirm_password || !nombre_completo) {
-      return res.status(400).json({ success: false, message: 'Datos incompletos' });
-    }
-    
-    if (password !== confirm_password) {
-      return res.status(400).json({ success: false, message: 'Contraseñas no coinciden' });
-    }
-    
-    // Hash de contraseña
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    
-    const result = await pool.query(
-      `INSERT INTO "Usuarios" (email, contraseña, nombre_completo, usuario, id_rol, estado) 
-       VALUES ($1, $2, $3, $4, $5, 1) 
-       RETURNING id_usuario, email, nombre_completo, usuario, id_rol, estado`,
-      [email, hashedPassword, nombre_completo, usuario, id_rol]
-    );
-    
-    res.status(201).json({
-      success: true,
-      message: 'Usuario creado',
-      data: result.rows[0]
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
     });
-  } catch (error) {
-    console.error('Error crear usuario:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// ==================== CLIENTES ====================
-
-// LISTAR CLIENTES
-app.get('/api/clientes', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT * FROM "Clientes" 
-      WHERE estado = 1 
-      ORDER BY nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `${result.rows.length} clientes encontrados`,
-      data: result.rows || []
-    });
-  } catch (error) {
-    console.error('Error clientes:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR CLIENTE
-app.post('/api/clientes', authenticateToken, async (req, res) => {
-  try {
-    const { nombre, tipo_documento, documento, telefono, direccion } = req.body;
-    
-    if (!nombre) {
-      return res.status(400).json({ success: false, message: 'Nombre requerido' });
-    }
-    
-    const result = await pool.query(
-      `INSERT INTO "Clientes" (nombre, tipo_documento, documento, telefono, direccion, estado) 
-       VALUES ($1, $2, $3, $4, $5, 1) 
-       RETURNING *`,
-      [nombre, tipo_documento, documento, telefono, direccion]
-    );
-    
-    res.status(201).json({
-      success: true,
-      message: 'Cliente creado',
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Error crear cliente:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// ==================== CATEGORÍAS ====================
-
-// LISTAR CATEGORÍAS
-app.get('/api/categorias', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT * FROM "Categorias" 
-      WHERE estado = 1 
-      ORDER BY nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `${result.rows.length} categorías encontradas`,
-      data: result.rows || []
-    });
-  } catch (error) {
-    console.error('Error categorías:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR CATEGORÍA
-app.post('/api/categorias', authenticateToken, async (req, res) => {
-  try {
-    const { nombre, descripcion } = req.body;
-    
-    if (!nombre) {
-      return res.status(400).json({ success: false, message: 'Nombre requerido' });
-    }
-    
-    const result = await pool.query(
-      `INSERT INTO "Categorias" (nombre, descripcion, estado) 
-       VALUES ($1, $2, 1) 
-       RETURNING *`,
-      [nombre, descripcion]
-    );
-    
-    res.status(201).json({
-      success: true,
-      message: 'Categoría creada',
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Error crear categoría:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// ==================== PRODUCTOS ====================
-
-// LISTAR PRODUCTOS
-app.get('/api/productos', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT p.*, c.nombre as categoria_nombre 
-      FROM "Productos" p
-      LEFT JOIN "Categorias" c ON p.id_categoria = c.id_categoria
-      WHERE p.estado = 1 
-      ORDER BY p.nombre
-    `);
-    
-    res.json({
-      success: true,
-      message: `${result.rows.length} productos encontrados`,
-      data: result.rows || []
-    });
-  } catch (error) {
-    console.error('Error productos:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR PRODUCTO
-app.post('/api/productos', authenticateToken, async (req, res) => {
-  try {
-    const { nombre, id_categoria, stock = 0, precio_compra, precio_venta } = req.body;
-    
-    if (!nombre || !precio_venta) {
-      return res.status(400).json({ success: false, message: 'Nombre y precio requeridos' });
-    }
-    
-    const result = await pool.query(
-      `INSERT INTO "Productos" (nombre, id_categoria, stock, precio_compra, precio_venta, estado) 
-       VALUES ($1, $2, $3, $4, $5, 1) 
-       RETURNING *`,
-      [nombre, id_categoria, stock, precio_compra || 0, precio_venta]
-    );
-    
-    res.status(201).json({
-      success: true,
-      message: 'Producto creado',
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Error crear producto:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
   }
 });
 
 // ==================== PROVEEDORES ====================
 
-// LISTAR PROVEEDORES
+// LISTAR PROVEEDORES (TABLA EN MINÚSCULAS)
 app.get('/api/proveedores', authenticateToken, async (req, res) => {
   try {
+    console.log(`📡 ${req.user.email} solicitando proveedores`);
+    
     const result = await pool.query(`
-      SELECT * FROM "Proveedores" 
+      SELECT * FROM proveedores 
       WHERE estado = 1 
       ORDER BY nombre_razon_social
     `);
     
     res.json({
       success: true,
-      message: `${result.rows.length} proveedores encontrados`,
+      message: `✅ ${result.rows.length} proveedores encontrados`,
       data: result.rows || []
     });
+    
   } catch (error) {
     console.error('Error proveedores:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR PROVEEDOR
-app.post('/api/proveedores', authenticateToken, async (req, res) => {
-  try {
-    const { nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion } = req.body;
-    
-    if (!nombre_razon_social) {
-      return res.status(400).json({ success: false, message: 'Nombre requerido' });
-    }
-    
-    const result = await pool.query(
-      `INSERT INTO "Proveedores" (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 1) 
-       RETURNING *`,
-      [nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion]
-    );
-    
-    res.status(201).json({
-      success: true,
-      message: 'Proveedor creado',
-      data: result.rows[0]
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
     });
-  } catch (error) {
-    console.error('Error crear proveedor:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
   }
 });
 
-// ==================== COMPRAS ====================
+// ==================== DASHBOARD ====================
 
-// LISTAR COMPRAS
-app.get('/api/compras', authenticateToken, async (req, res) => {
+app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT c.*, p.nombre_razon_social as proveedor_nombre
-      FROM "Compras" c
-      LEFT JOIN "Proveedores" p ON c.id_proveedor = p.id_proveedor
-      ORDER BY c.fecha DESC
-    `);
+    console.log(`📡 ${req.user.email} solicitando dashboard`);
+    
+    // Obtener estadísticas básicas
+    const [
+      totalClientes,
+      totalProductos,
+      totalVentas,
+      totalCompras
+    ] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM clientes WHERE estado = 1'),
+      pool.query('SELECT COUNT(*) FROM productos WHERE estado = 1'),
+      pool.query('SELECT COUNT(*) FROM ventas'),
+      pool.query('SELECT COUNT(*) FROM compras')
+    ]);
     
     res.json({
       success: true,
-      message: `${result.rows.length} compras encontradas`,
-      data: result.rows || []
-    });
-  } catch (error) {
-    console.error('Error compras:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// CREAR COMPRA
-app.post('/api/compras', authenticateToken, async (req, res) => {
-  try {
-    const { id_proveedor, total, fecha, numero_factura, detalles } = req.body;
-    
-    if (!id_proveedor || !total || !detalles || !Array.isArray(detalles)) {
-      return res.status(400).json({ success: false, message: 'Datos incompletos' });
-    }
-    
-    await pool.query('BEGIN');
-    
-    try {
-      // Insertar compra
-      const compraResult = await pool.query(
-        `INSERT INTO "Compras" (id_proveedor, total, fecha, numero_factura, estado) 
-         VALUES ($1, $2, $3, $4, 1) 
-         RETURNING id_compra`,
-        [id_proveedor, total, fecha || new Date(), numero_factura]
-      );
-      
-      const idCompra = compraResult.rows[0].id_compra;
-      
-      // Insertar detalles
-      for (const detalle of detalles) {
-        await pool.query(
-          `INSERT INTO "Detalle_compras" (id_compra, id_producto, cantidad, precio, subtotal) 
-           VALUES ($1, $2, $3, $4, $5)`,
-          [idCompra, detalle.id_producto, detalle.cantidad, detalle.precio, detalle.subtotal]
-        );
-        
-        // Actualizar stock
-        await pool.query(
-          `UPDATE "Productos" SET stock = stock + $1 WHERE id_producto = $2`,
-          [detalle.cantidad, detalle.id_producto]
-        );
+      data: {
+        total_clientes: parseInt(totalClientes.rows[0].count),
+        total_productos: parseInt(totalProductos.rows[0].count),
+        total_ventas: parseInt(totalVentas.rows[0].count),
+        total_compras: parseInt(totalCompras.rows[0].count),
+        timestamp: new Date().toISOString()
       }
-      
-      await pool.query('COMMIT');
-      
-      res.status(201).json({
-        success: true,
-        message: 'Compra creada',
-        data: { id_compra: idCompra }
-      });
-      
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
-    }
-  } catch (error) {
-    console.error('Error crear compra:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// ==================== VENTAS ====================
-
-// LISTAR VENTAS
-app.get('/api/ventas', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT v.*, c.nombre as cliente_nombre
-      FROM "Ventas" v
-      LEFT JOIN "Clientes" c ON v.id_cliente = c.id_cliente
-      ORDER BY v.fecha DESC
-    `);
-    
-    res.json({
-      success: true,
-      message: `${result.rows.length} ventas encontradas`,
-      data: result.rows || []
     });
+    
   } catch (error) {
-    console.error('Error ventas:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// DETALLES DE VENTA
-app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const result = await pool.query(`
-      SELECT dv.*, p.nombre as nombre_producto
-      FROM "Detalle_ventas" dv
-      LEFT JOIN "Productos" p ON dv.id_producto = p.id_producto
-      WHERE dv.id_venta = $1
-      ORDER BY dv.id_det_venta
-    `, [id]);
-    
-    res.json({
-      success: true,
-      message: `${result.rows.length} detalles encontrados`,
-      data: result.rows || []
+    console.error('Error dashboard:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
     });
-  } catch (error) {
-    console.error('Error detalles venta:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
   }
-});
-
-// CREAR VENTA
-app.post('/api/ventas', authenticateToken, async (req, res) => {
-  try {
-    const { id_cliente, total, fecha, estado = 2, detalles } = req.body;
-    
-    if (!id_cliente || !total || !detalles || !Array.isArray(detalles)) {
-      return res.status(400).json({ success: false, message: 'Datos incompletos' });
-    }
-    
-    await pool.query('BEGIN');
-    
-    try {
-      // Insertar venta
-      const ventaResult = await pool.query(
-        `INSERT INTO "Ventas" (id_cliente, total, fecha, estado) 
-         VALUES ($1, $2, $3, $4) 
-         RETURNING id_venta`,
-        [id_cliente, total, fecha || new Date(), estado]
-      );
-      
-      const idVenta = ventaResult.rows[0].id_venta;
-      
-      // Insertar detalles
-      for (const detalle of detalles) {
-        await pool.query(
-          `INSERT INTO "Detalle_ventas" (id_venta, id_producto, cantidad, precio, subtotal) 
-           VALUES ($1, $2, $3, $4, $5)`,
-          [idVenta, detalle.id_producto, detalle.cantidad, detalle.precio, detalle.subtotal]
-        );
-        
-        // Actualizar stock (solo si no está anulada)
-        if (estado !== 3) {
-          await pool.query(
-            `UPDATE "Productos" SET stock = stock - $1 WHERE id_producto = $2`,
-            [detalle.cantidad, detalle.id_producto]
-          );
-        }
-      }
-      
-      await pool.query('COMMIT');
-      
-      res.status(201).json({
-        success: true,
-        message: 'Venta creada',
-        data: { id_venta: idVenta }
-      });
-      
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
-    }
-  } catch (error) {
-    console.error('Error crear venta:', error.message);
-    res.status(500).json({ success: false, message: 'Error: ' + error.message });
-  }
-});
-
-// ==================== ENDPOINT DE PRUEBA ====================
-app.get('/api/test', (req, res) => {
-  res.json({
-    success: true,
-    message: '✅ API funcionando correctamente',
-    timestamp: new Date().toISOString()
-  });
 });
 
 // ==================== MANEJO DE ERRORES 404 ====================
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: `Ruta no encontrada: ${req.method} ${req.url}`
+    message: `Ruta no encontrada: ${req.method} ${req.url}`,
+    suggestion: 'Visita la raíz (/) para ver los endpoints disponibles'
   });
 });
 
 // ==================== INICIAR SERVIDOR ====================
-app.listen(PORT, '0.0.0.0', () => {
-  console.log('='.repeat(60));
-  console.log('🚀 API STOCKBAR - SERVIDOR INICIADO');
-  console.log('='.repeat(60));
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log('='.repeat(70));
+  console.log('🚀 API STOCKBAR - VERSIÓN 6.0');
+  console.log('='.repeat(70));
+  console.log('✅ CONFIGURADO PARA TABLAS EN MINÚSCULAS');
+  console.log('   • usuarios    • clientes    • productos');
+  console.log('   • categorias  • proveedores • compras');
+  console.log('   • ventas      • roles       • detalle_ventas');
+  console.log('   • detalle_compras');
+  console.log('='.repeat(70));
   console.log(`📡 Puerto: ${PORT}`);
-  console.log(`🌐 URL base: http://localhost:${PORT}`);
-  console.log('='.repeat(60));
-  console.log('✅ Endpoints disponibles:');
+  console.log(`🌐 URL local: http://localhost:${PORT}`);
+  console.log(`🌍 URL pública: https://api-stockbar.onrender.com`);
+  console.log('='.repeat(70));
+  console.log('✅ Endpoints públicos:');
   console.log('   GET  /               - Raíz de la API');
   console.log('   POST /api/login      - Autenticación');
   console.log('   GET  /api/test       - Prueba de conexión');
-  console.log('   GET  /api/ventas     - Listar ventas (requiere token)');
-  console.log('   POST /api/ventas     - Crear venta (requiere token)');
-  console.log('='.repeat(60));
+  console.log('   GET  /api/check-db   - Verificar base de datos');
+  console.log('='.repeat(70));
   console.log('🔐 Credenciales por defecto:');
   console.log('   Email: thebar752@gmail.com');
   console.log('   Password: admin123');
-  console.log('='.repeat(60));
+  console.log('='.repeat(70));
   console.log('✅ Servidor listo!');
-  console.log('='.repeat(60));
+  console.log('='.repeat(70));
+});
+
+// Manejo de cierre gracioso
+process.on('SIGTERM', () => {
+  console.log('🛑 Recibida señal SIGTERM, cerrando servidor...');
+  server.close(() => {
+    console.log('✅ Servidor cerrado');
+    pool.end(() => {
+      console.log('✅ Pool de PostgreSQL cerrado');
+      process.exit(0);
+    });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 Recibida señal SIGINT, cerrando servidor...');
+  server.close(() => {
+    console.log('✅ Servidor cerrado');
+    pool.end(() => {
+      console.log('✅ Pool de PostgreSQL cerrado');
+      process.exit(0);
+    });
+  });
 });
