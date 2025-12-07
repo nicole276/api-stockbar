@@ -73,7 +73,11 @@ app.get('/', (req, res) => {
       login: 'POST /api/login',
       clientes: 'GET /api/clientes (requiere token)',
       productos: 'GET /api/productos (requiere token)',
-      ventas: 'GET /api/ventas (requiere token)'
+      ventas: 'GET /api/ventas (requiere token)',
+      detallesVenta: 'GET /api/ventas/:id/detalles (requiere token)',
+      crearVenta: 'POST /api/ventas (requiere token)',
+      actualizarVenta: 'PUT /api/ventas/:id (requiere token)',
+      cambiarEstadoVenta: 'PUT /api/ventas/:id/estado (requiere token)'
     }
   });
 });
@@ -179,14 +183,27 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. CLIENTES
+// 3. CLIENTES - EVITAR DUPLICADOS
 app.get('/api/clientes', authenticateToken, async (req, res) => {
   try {
     console.log(`📡 ${req.user.email} solicitando clientes`);
     
+    // Usar DISTINCT ON para evitar clientes duplicados por nombre
     const result = await pool.query(`
-      SELECT * FROM clientes ORDER BY nombre
+      SELECT DISTINCT ON (nombre) 
+        id_cliente, 
+        nombre, 
+        email, 
+        telefono, 
+        direccion, 
+        estado, 
+        fecha_creacion
+      FROM clientes 
+      WHERE estado = 1 
+      ORDER BY nombre, id_cliente
     `);
+    
+    console.log(`✅ ${result.rows.length} clientes únicos encontrados`);
     
     res.json({
       success: true,
@@ -209,7 +226,9 @@ app.get('/api/productos', authenticateToken, async (req, res) => {
     console.log(`📡 ${req.user.email} solicitando productos`);
     
     const result = await pool.query(`
-      SELECT * FROM productos ORDER BY nombre
+      SELECT * FROM productos 
+      WHERE estado = 1 
+      ORDER BY nombre
     `);
     
     res.json({
@@ -233,7 +252,11 @@ app.get('/api/ventas', authenticateToken, async (req, res) => {
     console.log(`📡 ${req.user.email} solicitando ventas`);
     
     const result = await pool.query(`
-      SELECT * FROM ventas ORDER BY fecha DESC
+      SELECT v.*, 
+             c.nombre as cliente_nombre
+      FROM ventas v
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
+      ORDER BY v.fecha DESC
     `);
     
     res.json({
@@ -251,10 +274,378 @@ app.get('/api/ventas', authenticateToken, async (req, res) => {
   }
 });
 
+// 6. DETALLES DE VENTA
+app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`📡 ${req.user.email} solicitando detalles de venta ${id}`);
+    
+    const result = await pool.query(`
+      SELECT dv.*, 
+             p.nombre as nombre_producto
+      FROM detalle_ventas dv
+      LEFT JOIN productos p ON dv.id_producto = p.id_producto
+      WHERE dv.id_venta = $1
+      ORDER BY dv.id_detalle
+    `, [id]);
+    
+    res.json({
+      success: true,
+      message: `✅ ${result.rows.length} detalles encontrados`,
+      data: result.rows || []
+    });
+    
+  } catch (error) {
+    console.error('Error detalles venta:', error.message);
+    res.json({ 
+      success: false, 
+      message: 'Error: ' + error.message 
+    });
+  }
+});
+
+// 7. CREAR VENTA
+app.post('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📡 ${req.user.email} creando nueva venta`);
+    
+    const { id_cliente, total, fecha, estado = 2, detalles } = req.body;
+    
+    // Validaciones básicas
+    if (!id_cliente || !total || !detalles || !Array.isArray(detalles) || detalles.length === 0) {
+      return res.json({
+        success: false,
+        message: 'Datos incompletos: Se requiere cliente, total y al menos un producto'
+      });
+    }
+    
+    // Iniciar transacción
+    await pool.query('BEGIN');
+    
+    try {
+      // 1. Insertar venta
+      const ventaResult = await pool.query(
+        `INSERT INTO ventas (id_cliente, total, fecha, estado, id_usuario) 
+         VALUES ($1, $2, $3, $4, $5) 
+         RETURNING id_venta`,
+        [id_cliente, total, fecha || new Date(), estado, req.user.id_usuario]
+      );
+      
+      const idVenta = ventaResult.rows[0].id_venta;
+      
+      // 2. Insertar detalles de venta
+      for (const detalle of detalles) {
+        await pool.query(
+          `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio_unitario, subtotal) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [idVenta, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
+        );
+        
+        // 3. Actualizar stock del producto (solo si la venta no está anulada)
+        if (estado !== 3) {
+          const updateResult = await pool.query(
+            `UPDATE productos 
+             SET stock = stock - $1 
+             WHERE id_producto = $2 AND stock >= $1 
+             RETURNING id_producto`,
+            [detalle.cantidad, detalle.id_producto]
+          );
+          
+          if (updateResult.rows.length === 0) {
+            throw new Error(`Stock insuficiente para el producto ID: ${detalle.id_producto}`);
+          }
+        }
+      }
+      
+      await pool.query('COMMIT');
+      
+      console.log(`✅ Venta ${idVenta} creada exitosamente`);
+      
+      res.json({
+        success: true,
+        message: '✅ Venta creada exitosamente',
+        data: { id_venta: idVenta }
+      });
+      
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Error crear venta:', error.message);
+    res.json({
+      success: false,
+      message: 'Error al crear venta: ' + error.message
+    });
+  }
+});
+
+// 8. ACTUALIZAR VENTA - SOLO VENTAS PENDIENTES
+app.put('/api/ventas/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`📡 ${req.user.email} intentando actualizar venta ${id}`);
+    
+    const { id_cliente, total, fecha, detalles } = req.body;
+    
+    // Validaciones básicas
+    if (!id_cliente || !total || !detalles || !Array.isArray(detalles) || detalles.length === 0) {
+      return res.json({
+        success: false,
+        message: 'Datos incompletos: Se requiere cliente, total y al menos un producto'
+      });
+    }
+    
+    // Verificar que la venta existe y está PENDIENTE (estado 2)
+    const ventaCheck = await pool.query(
+      `SELECT estado FROM ventas WHERE id_venta = $1`,
+      [id]
+    );
+    
+    if (ventaCheck.rows.length === 0) {
+      return res.json({
+        success: false,
+        message: 'Venta no encontrada'
+      });
+    }
+    
+    const estadoActual = ventaCheck.rows[0].estado;
+    
+    // SOLO PERMITIR EDITAR VENTAS PENDIENTES
+    if (estadoActual !== 2) {
+      return res.json({
+        success: false,
+        message: `No se puede editar una venta ${estadoActual === 1 ? 'completada' : 'anulada'}. Solo se pueden editar ventas pendientes.`
+      });
+    }
+    
+    // Iniciar transacción
+    await pool.query('BEGIN');
+    
+    try {
+      // 1. Obtener detalles actuales para restaurar stock
+      const detallesActuales = await pool.query(
+        `SELECT id_producto, cantidad FROM detalle_ventas WHERE id_venta = $1`,
+        [id]
+      );
+      
+      // 2. Restaurar stock de productos antiguos
+      for (const detalle of detallesActuales.rows) {
+        await pool.query(
+          `UPDATE productos 
+           SET stock = stock + $1 
+           WHERE id_producto = $2`,
+          [detalle.cantidad, detalle.id_producto]
+        );
+        console.log(`↩️ Stock restaurado: Producto ${detalle.id_producto} +${detalle.cantidad}`);
+      }
+      
+      // 3. Eliminar detalles antiguos
+      await pool.query(
+        `DELETE FROM detalle_ventas WHERE id_venta = $1`,
+        [id]
+      );
+      
+      // 4. Actualizar venta
+      await pool.query(
+        `UPDATE ventas 
+         SET id_cliente = $1, total = $2, fecha = $3 
+         WHERE id_venta = $4`,
+        [id_cliente, total, fecha || new Date(), id]
+      );
+      
+      // 5. Insertar nuevos detalles
+      for (const detalle of detalles) {
+        await pool.query(
+          `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio_unitario, subtotal) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [id, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
+        );
+        
+        // 6. Actualizar stock del producto
+        const updateResult = await pool.query(
+          `UPDATE productos 
+           SET stock = stock - $1 
+           WHERE id_producto = $2 AND stock >= $1 
+           RETURNING id_producto`,
+          [detalle.cantidad, detalle.id_producto]
+        );
+        
+        if (updateResult.rows.length === 0) {
+          throw new Error(`Stock insuficiente para el producto ID: ${detalle.id_producto}`);
+        }
+        
+        console.log(`📉 Stock actualizado: Producto ${detalle.id_producto} -${detalle.cantidad}`);
+      }
+      
+      await pool.query('COMMIT');
+      
+      console.log(`✅ Venta ${id} actualizada exitosamente`);
+      
+      res.json({
+        success: true,
+        message: '✅ Venta actualizada exitosamente'
+      });
+      
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Error actualizar venta:', error.message);
+    res.json({
+      success: false,
+      message: 'Error al actualizar venta: ' + error.message
+    });
+  }
+});
+
+// 9. CAMBIAR ESTADO DE VENTA (Completar, Pendiente, Anular)
+app.put('/api/ventas/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    console.log(`📡 ${req.user.email} cambiando estado de venta ${id} a ${estado}`);
+    
+    if (!estado || ![1, 2, 3].includes(parseInt(estado))) {
+      return res.json({
+        success: false,
+        message: 'Estado inválido. Use: 1=Completado, 2=Pendiente, 3=Anulado'
+      });
+    }
+    
+    // Verificar que la venta existe
+    const ventaCheck = await pool.query(
+      `SELECT estado FROM ventas WHERE id_venta = $1`,
+      [id]
+    );
+    
+    if (ventaCheck.rows.length === 0) {
+      return res.json({
+        success: false,
+        message: 'Venta no encontrada'
+      });
+    }
+    
+    const estadoActual = ventaCheck.rows[0].estado;
+    const nuevoEstado = parseInt(estado);
+    
+    // Validar transiciones de estado
+    if (estadoActual === 1 && nuevoEstado !== 1) {
+      return res.json({
+        success: false,
+        message: 'No se puede cambiar el estado de una venta completada'
+      });
+    }
+    
+    // Iniciar transacción
+    await pool.query('BEGIN');
+    
+    try {
+      // ANULAR VENTA (estado 3) - Restaurar stock
+      if (nuevoEstado === 3 && estadoActual !== 3) {
+        // Restaurar stock de productos
+        const detalles = await pool.query(
+          `SELECT id_producto, cantidad FROM detalle_ventas WHERE id_venta = $1`,
+          [id]
+        );
+        
+        for (const detalle of detalles.rows) {
+          await pool.query(
+            `UPDATE productos 
+             SET stock = stock + $1 
+             WHERE id_producto = $2`,
+            [detalle.cantidad, detalle.id_producto]
+          );
+          console.log(`🔄 Stock restaurado (anulación): Producto ${detalle.id_producto} +${detalle.cantidad}`);
+        }
+      }
+      
+      // REACTIVAR VENTA ANULADA (de 3 a 1 o 2) - Restar stock nuevamente
+      if (estadoActual === 3 && nuevoEstado !== 3) {
+        // Restar stock de productos
+        const detalles = await pool.query(
+          `SELECT id_producto, cantidad FROM detalle_ventas WHERE id_venta = $1`,
+          [id]
+        );
+        
+        for (const detalle of detalles.rows) {
+          const updateResult = await pool.query(
+            `UPDATE productos 
+             SET stock = stock - $1 
+             WHERE id_producto = $2 AND stock >= $1 
+             RETURNING id_producto`,
+            [detalle.cantidad, detalle.id_producto]
+          );
+          
+          if (updateResult.rows.length === 0) {
+            throw new Error(`Stock insuficiente para reactivar venta. Producto ID: ${detalle.id_producto}`);
+          }
+          console.log(`📉 Stock restado (reactivación): Producto ${detalle.id_producto} -${detalle.cantidad}`);
+        }
+      }
+      
+      // Cambiar de pendiente a completado - No cambia stock
+      if (estadoActual === 2 && nuevoEstado === 1) {
+        console.log(`✅ Marcando venta ${id} como completada`);
+      }
+      
+      // Cambiar de completado a pendiente - No permitido (ya validado arriba)
+      
+      // Actualizar estado de la venta
+      await pool.query(
+        `UPDATE ventas SET estado = $1 WHERE id_venta = $2`,
+        [nuevoEstado, id]
+      );
+      
+      await pool.query('COMMIT');
+      
+      const estadoTexto = nuevoEstado === 1 ? 'completada' : (nuevoEstado === 2 ? 'pendiente' : 'anulada');
+      console.log(`✅ Estado de venta ${id} cambiado a ${estadoTexto}`);
+      
+      res.json({
+        success: true,
+        message: `✅ Venta ${estadoTexto} exitosamente`
+      });
+      
+    } catch (error) {
+      await pool.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Error cambiar estado venta:', error.message);
+    res.json({
+      success: false,
+      message: 'Error al cambiar estado: ' + error.message
+    });
+  }
+});
+
 // ==================== INICIAR SERVIDOR ====================
 app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(60));
-  console.log('🚀 API STOCKBAR - VERSIÓN ESTABLE 1.0');
+  console.log('🚀 API STOCKBAR - VERSIÓN ESTABLE 3.0');
+  console.log('='.repeat(60));
+  console.log('📋 CARACTERÍSTICAS NUEVAS:');
+  console.log('   ✅ Evita clientes duplicados (DISTINCT ON)');
+  console.log('   ✅ Solo permite editar ventas PENDIENTES');
+  console.log('   ✅ No permite cambiar estado de ventas COMPLETADAS');
+  console.log('   ✅ Al anular: productos vuelven al stock');
+  console.log('   ✅ Al reactivar: se valida stock disponible');
+  console.log('='.repeat(60));
+  console.log('📋 Endpoints disponibles:');
+  console.log('   POST /api/login');
+  console.log('   GET  /api/clientes (requiere token)');
+  console.log('   GET  /api/productos (requiere token)');
+  console.log('   GET  /api/ventas (requiere token)');
+  console.log('   GET  /api/ventas/:id/detalles (requiere token)');
+  console.log('   POST /api/ventas (requiere token)');
+  console.log('   PUT  /api/ventas/:id (requiere token)');
+  console.log('   PUT  /api/ventas/:id/estado (requiere token)');
   console.log('='.repeat(60));
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL: https://api-stockbar.onrender.com`);
