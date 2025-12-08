@@ -19,15 +19,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// ==================== CONFIGURACIÓN DE EMAIL - SOLUCIÓN DEFINITIVA ====================
-console.log('📧 Configurando servicio de email...');
-
-// USAR SMTP DIRECTO CON GMAIL - CONFIGURACIÓN CORRECTA
+// ==================== CONFIGURACIÓN DE EMAIL ====================
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'thebar752@gmail.com',
-    pass: 'sfqj taqe yrmr zfhj' // Contraseña de aplicación
+    pass: 'sfqj taqe yrmr zfhj'
   }
 });
 
@@ -35,14 +32,8 @@ const transporter = nodemailer.createTransport({
 transporter.verify(function(error, success) {
   if (error) {
     console.error('❌ Error SMTP:', error.message);
-    console.log('🔧 Solución: Verificar que:');
-    console.log('1. Email: thebar752@gmail.com es correcto');
-    console.log('2. Contraseña de aplicación: sfqj taqe yrmr zfhj');
-    console.log('3. Verificación en 2 pasos está ACTIVADA en Google');
-    console.log('4. Contraseña de aplicación generada correctamente');
   } else {
     console.log('✅ Servidor SMTP configurado correctamente');
-    console.log('📧 Listo para enviar emails');
   }
 });
 
@@ -60,8 +51,8 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '✅ API STOCKBAR - VERSIÓN 8.0 (SISTEMA COMPLETO)',
-    version: '8.0.0',
+    message: '✅ API STOCKBAR - VERSIÓN 9.0 (SISTEMA COMPLETO)',
+    version: '9.0.0',
     status: 'operacional',
     timestamp: new Date().toISOString(),
     endpoints: {
@@ -71,18 +62,18 @@ app.get('/', (req, res) => {
         'verify-email': 'POST /api/verify-email',
         'send-recovery-email': 'POST /api/send-recovery-email',
         'update-password': 'POST /api/update-password',
-        'send-confirmation-email': 'POST /api/send-confirmation-email',
-        test: 'GET /api/test',
-        'check-db': 'GET /api/check-db'
+        'send-confirmation-email': 'POST /api/send-confirmation-email'
       },
       protected: {
-        ventas: 'GET /api/ventas',
-        'venta-detalle': 'GET /api/ventas/:id/detalles',
-        'venta-update': 'PUT /api/ventas/:id',
-        'venta-delete': 'DELETE /api/ventas/:id',
-        'venta-estado': 'PUT /api/ventas/:id/estado',
+        roles: 'GET /api/roles',
+        usuarios: 'GET /api/usuarios',
+        categorias: 'GET /api/categorias',
+        productos: 'GET /api/productos',
+        proveedores: 'GET /api/proveedores',
+        compras: 'GET /api/compras',
         clientes: 'GET /api/clientes',
-        productos: 'GET /api/productos'
+        ventas: 'GET /api/ventas',
+        permisos: 'GET /api/permisos'
       }
     }
   });
@@ -104,11 +95,9 @@ const authenticateToken = async (req, res, next) => {
       token = token.slice(7);
     }
     
-    // Token simple decodificado
     const decoded = Buffer.from(token, 'base64').toString('ascii');
     const [userId] = decoded.split(':');
     
-    // Buscar usuario
     const result = await pool.query(
       'SELECT * FROM usuarios WHERE id_usuario = $1 AND estado = 1',
       [parseInt(userId)]
@@ -133,7 +122,9 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== VERIFICAR EMAIL ====================
+// ==================== ENDPOINTS DE LOGIN Y RECUPERACIÓN ====================
+
+// VERIFICAR EMAIL
 app.post('/api/verify-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -148,7 +139,6 @@ app.post('/api/verify-email', async (req, res) => {
       });
     }
     
-    // Buscar usuario por email
     const result = await pool.query(
       'SELECT id_usuario, email, nombre_completo FROM usuarios WHERE email = $1',
       [email]
@@ -183,7 +173,7 @@ app.post('/api/verify-email', async (req, res) => {
   }
 });
 
-// ==================== ENVIAR EMAIL DE RECUPERACIÓN ====================
+// ENVIAR EMAIL DE RECUPERACIÓN
 app.post('/api/send-recovery-email', async (req, res) => {
   try {
     const { email, codigo } = req.body;
@@ -197,7 +187,6 @@ app.post('/api/send-recovery-email', async (req, res) => {
       });
     }
     
-    // Verificar que el usuario existe
     const userResult = await pool.query(
       'SELECT nombre_completo FROM usuarios WHERE email = $1',
       [email]
@@ -212,7 +201,6 @@ app.post('/api/send-recovery-email', async (req, res) => {
     
     const nombreUsuario = userResult.rows[0].nombre_completo || 'Usuario';
     
-    // Configurar email HTML
     const mailOptions = {
       from: '"THE BAR Sistema" <thebar752@gmail.com>',
       to: email,
@@ -262,7 +250,6 @@ app.post('/api/send-recovery-email', async (req, res) => {
       text: `Código de recuperación THE BAR\n\nHola ${nombreUsuario},\n\nTu código de verificación es: ${codigo}\n\nEste código expira en 30 segundos.\n\nSi no solicitaste este cambio, ignora este mensaje.\n\nSaludos,\nEquipo THE BAR`
     };
     
-    // Enviar email
     const info = await transporter.sendMail(mailOptions);
     
     console.log('✅ Email enviado correctamente:', info.messageId);
@@ -281,7 +268,6 @@ app.post('/api/send-recovery-email', async (req, res) => {
   } catch (error) {
     console.error('💥 ERROR send-recovery-email:', error.message);
     
-    // Mensaje de error específico
     let errorMessage = 'Error al enviar el email';
     if (error.code === 'EAUTH') {
       errorMessage = 'Error de autenticación con Gmail. Verifica las credenciales.';
@@ -297,7 +283,7 @@ app.post('/api/send-recovery-email', async (req, res) => {
   }
 });
 
-// ==================== ENVIAR EMAIL DE CONFIRMACIÓN ====================
+// ENVIAR EMAIL DE CONFIRMACIÓN
 app.post('/api/send-confirmation-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -311,7 +297,6 @@ app.post('/api/send-confirmation-email', async (req, res) => {
       });
     }
     
-    // Verificar usuario
     const userResult = await pool.query(
       'SELECT nombre_completo FROM usuarios WHERE email = $1',
       [email]
@@ -366,7 +351,7 @@ app.post('/api/send-confirmation-email', async (req, res) => {
   }
 });
 
-// ==================== ACTUALIZAR CONTRASEÑA ====================
+// ACTUALIZAR CONTRASEÑA
 app.post('/api/update-password', async (req, res) => {
   try {
     const { email, nuevaPassword } = req.body;
@@ -387,7 +372,6 @@ app.post('/api/update-password', async (req, res) => {
       });
     }
     
-    // Verificar usuario
     const userResult = await pool.query(
       'SELECT id_usuario FROM usuarios WHERE email = $1',
       [email]
@@ -400,10 +384,8 @@ app.post('/api/update-password', async (req, res) => {
       });
     }
     
-    // Encriptar nueva contraseña
     const hashedPassword = await bcrypt.hash(nuevaPassword, 10);
     
-    // Actualizar en BD
     await pool.query(
       'UPDATE usuarios SET contraseña = $1, updated_at = NOW() WHERE email = $2',
       [hashedPassword, email]
@@ -426,7 +408,7 @@ app.post('/api/update-password', async (req, res) => {
   }
 });
 
-// ==================== LOGIN ====================
+// LOGIN
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -440,7 +422,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Buscar usuario
     const result = await pool.query(
       'SELECT * FROM usuarios WHERE email = $1',
       [email]
@@ -456,18 +437,14 @@ app.post('/api/login', async (req, res) => {
     const user = result.rows[0];
     const dbPassword = user.contraseña || '';
     
-    // Verificar contraseña
     let validPassword = false;
     
-    // 1. Comparación directa
     if (dbPassword === password) {
       validPassword = true;
     }
-    // 2. Bcrypt
     else if (dbPassword.startsWith('$2')) {
       validPassword = await bcrypt.compare(password, dbPassword);
     }
-    // 3. Contraseña por defecto
     else if (password === 'admin123') {
       validPassword = true;
       console.log('⚠️ Usando contraseña de desarrollo');
@@ -480,10 +457,8 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Generar token
     const token = Buffer.from(`${user.id_usuario}:${Date.now()}`).toString('base64');
     
-    // Preparar respuesta
     const userResponse = {
       id_usuario: user.id_usuario,
       email: user.email,
@@ -512,11 +487,1328 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ==================== VENTAS ====================
+// ==================== ENDPOINTS DE ROLES ====================
+
+// LISTAR ROLES
+app.get('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM roles ORDER BY id_rol'
+    );
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar roles:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo roles' 
+    });
+  }
+});
+
+// BUSCAR ROL POR ID
+app.get('/api/roles/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM roles WHERE id_rol = $1',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Rol no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar rol:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando rol' 
+    });
+  }
+});
+
+// CREAR ROL
+app.post('/api/roles', authenticateToken, async (req, res) => {
+  try {
+    const { nombre_rol, descripcion, estado = 1 } = req.body;
+    
+    if (!nombre_rol) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Nombre del rol es requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO roles (nombre_rol, descripcion, estado) 
+       VALUES ($1, $2, $3) RETURNING *`,
+      [nombre_rol, descripcion, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Rol creado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear rol:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando rol' 
+    });
+  }
+});
+
+// ACTUALIZAR ROL
+app.put('/api/roles/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre_rol, descripcion, estado } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE roles SET 
+        nombre_rol = COALESCE($1, nombre_rol),
+        descripcion = COALESCE($2, descripcion),
+        estado = COALESCE($3, estado)
+       WHERE id_rol = $4 RETURNING *`,
+      [nombre_rol, descripcion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Rol no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Rol actualizado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar rol:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando rol' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE ROL
+app.put('/api/roles/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE roles SET estado = $1 WHERE id_rol = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Rol no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado del rol actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado rol:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado del rol' 
+    });
+  }
+});
+
+// ASIGNAR PERMISOS A ROL
+app.post('/api/roles/:id/permisos', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { permisos } = req.body;
+    
+    if (!permisos || !Array.isArray(permisos)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Lista de permisos requerida' 
+      });
+    }
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      await client.query(
+        'DELETE FROM ver_detalle_rol WHERE id_rol = $1',
+        [id]
+      );
+      
+      for (const permiso of permisos) {
+        await client.query(
+          'INSERT INTO ver_detalle_rol (id_rol, id_permiso) VALUES ($1, $2)',
+          [id, permiso.id_permiso]
+        );
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: 'Permisos asignados exitosamente'
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error asignar permisos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error asignando permisos' 
+    });
+  }
+});
+
+// OBTENER PERMISOS DE UN ROL
+app.get('/api/roles/:id/permisos', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      `SELECT p.* FROM permisos p
+       JOIN ver_detalle_rol v ON p.id_permiso = v.id_permiso
+       WHERE v.id_rol = $1`,
+      [id]
+    );
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error obtener permisos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo permisos' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE USUARIOS ====================
+
+// LISTAR USUARIOS
+app.get('/api/usuarios', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.*, r.nombre_rol 
+      FROM usuarios u
+      LEFT JOIN roles r ON u.id_rol = r.id_rol
+      ORDER BY u.id_usuario
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar usuarios:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo usuarios' 
+    });
+  }
+});
+
+// BUSCAR USUARIO POR ID
+app.get('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT u.*, r.nombre_rol 
+      FROM usuarios u
+      LEFT JOIN roles r ON u.id_rol = r.id_rol
+      WHERE u.id_usuario = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Usuario no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar usuario:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando usuario' 
+    });
+  }
+});
+
+// CREAR USUARIO
+app.post('/api/usuarios', authenticateToken, async (req, res) => {
+  try {
+    const { id_rol, nombre_completo, email, usuario, contraseña, estado = 1 } = req.body;
+    
+    if (!email || !contraseña || !nombre_completo) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email, contraseña y nombre son requeridos' 
+      });
+    }
+    
+    const emailExists = await pool.query(
+      'SELECT * FROM usuarios WHERE email = $1',
+      [email]
+    );
+    
+    if (emailExists.rows.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'El email ya está registrado' 
+      });
+    }
+    
+    const hashedPassword = await bcrypt.hash(contraseña, 10);
+    
+    const result = await pool.query(
+      `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id_rol, nombre_completo, email, usuario, hashedPassword, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Usuario creado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear usuario:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando usuario' 
+    });
+  }
+});
+
+// ACTUALIZAR USUARIO
+app.put('/api/usuarios/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { id_rol, nombre_completo, email, usuario, contraseña, estado } = req.body;
+    
+    let updateQuery = `
+      UPDATE usuarios SET 
+        id_rol = COALESCE($1, id_rol),
+        nombre_completo = COALESCE($2, nombre_completo),
+        email = COALESCE($3, email),
+        usuario = COALESCE($4, usuario),
+        estado = COALESCE($5, estado)
+    `;
+    
+    const queryParams = [id_rol, nombre_completo, email, usuario, estado, id];
+    
+    if (contraseña) {
+      const hashedPassword = await bcrypt.hash(contraseña, 10);
+      updateQuery += ', contraseña = $6';
+      queryParams.splice(5, 0, hashedPassword);
+    }
+    
+    updateQuery += ' WHERE id_usuario = $' + queryParams.length + ' RETURNING *';
+    
+    const result = await pool.query(updateQuery, queryParams);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Usuario no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Usuario actualizado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar usuario:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando usuario' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE USUARIO
+app.put('/api/usuarios/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE usuarios SET estado = $1 WHERE id_usuario = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Usuario no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado del usuario actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado usuario:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado del usuario' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE CATEGORÍAS ====================
+
+// LISTAR CATEGORÍAS
+app.get('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM categorias ORDER BY nombre'
+    );
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar categorías:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo categorías' 
+    });
+  }
+});
+
+// BUSCAR CATEGORÍA POR ID
+app.get('/api/categorias/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM categorias WHERE id_categoria = $1',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Categoría no encontrada' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar categoría:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando categoría' 
+    });
+  }
+});
+
+// CREAR CATEGORÍA
+app.post('/api/categorias', authenticateToken, async (req, res) => {
+  try {
+    const { nombre, descripcion, estado = 1 } = req.body;
+    
+    if (!nombre) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Nombre de categoría es requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO categorias (nombre, descripcion, estado) 
+       VALUES ($1, $2, $3) RETURNING *`,
+      [nombre, descripcion, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Categoría creada exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear categoría:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando categoría' 
+    });
+  }
+});
+
+// ACTUALIZAR CATEGORÍA
+app.put('/api/categorias/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, descripcion, estado } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE categorias SET 
+        nombre = COALESCE($1, nombre),
+        descripcion = COALESCE($2, descripcion),
+        estado = COALESCE($3, estado)
+       WHERE id_categoria = $4 RETURNING *`,
+      [nombre, descripcion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Categoría no encontrada' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Categoría actualizada exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar categoría:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando categoría' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE CATEGORÍA
+app.put('/api/categorias/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE categorias SET estado = $1 WHERE id_categoria = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Categoría no encontrada' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado de categoría actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado categoría:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado de categoría' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE PROVEEDORES ====================
+
+// LISTAR PROVEEDORES
+app.get('/api/proveedores', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM proveedores ORDER BY nombre_razon_social'
+    );
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar proveedores:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo proveedores' 
+    });
+  }
+});
+
+// BUSCAR PROVEEDOR POR ID
+app.get('/api/proveedores/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM proveedores WHERE id_proveedor = $1',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Proveedor no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar proveedor:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando proveedor' 
+    });
+  }
+});
+
+// CREAR PROVEEDOR
+app.post('/api/proveedores', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      nombre_razon_social, 
+      tipo_documento, 
+      documento, 
+      contacto, 
+      telefono, 
+      email, 
+      direccion, 
+      estado = 1 
+    } = req.body;
+    
+    if (!nombre_razon_social || !documento) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Nombre y documento son requeridos' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO proveedores 
+       (nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Proveedor creado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear proveedor:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando proveedor' 
+    });
+  }
+});
+
+// ACTUALIZAR PROVEEDOR
+app.put('/api/proveedores/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      nombre_razon_social, 
+      tipo_documento, 
+      documento, 
+      contacto, 
+      telefono, 
+      email, 
+      direccion, 
+      estado 
+    } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE proveedores SET 
+        nombre_razon_social = COALESCE($1, nombre_razon_social),
+        tipo_documento = COALESCE($2, tipo_documento),
+        documento = COALESCE($3, documento),
+        contacto = COALESCE($4, contacto),
+        telefono = COALESCE($5, telefono),
+        email = COALESCE($6, email),
+        direccion = COALESCE($7, direccion),
+        estado = COALESCE($8, estado)
+       WHERE id_proveedor = $9 RETURNING *`,
+      [nombre_razon_social, tipo_documento, documento, contacto, telefono, email, direccion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Proveedor no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Proveedor actualizado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar proveedor:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando proveedor' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE PROVEEDOR
+app.put('/api/proveedores/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE proveedores SET estado = $1 WHERE id_proveedor = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Proveedor no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado del proveedor actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado proveedor:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado del proveedor' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE PRODUCTOS ====================
+
+// LISTAR PRODUCTOS
+app.get('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT p.*, c.nombre as categoria_nombre 
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
+      ORDER BY p.nombre
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar productos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo productos' 
+    });
+  }
+});
+
+// BUSCAR PRODUCTO POR ID
+app.get('/api/productos/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT p.*, c.nombre as categoria_nombre 
+      FROM productos p
+      LEFT JOIN categorias c ON p.id_categoria = c.id_categoria
+      WHERE p.id_producto = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Producto no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar producto:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando producto' 
+    });
+  }
+});
+
+// CREAR PRODUCTO
+app.post('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      id_categoria, 
+      nombre, 
+      stock = 0, 
+      precio_compra, 
+      precio_venta, 
+      estado = 1 
+    } = req.body;
+    
+    if (!nombre || precio_compra === undefined || precio_venta === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Nombre y precios son requeridos' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO productos 
+       (id_categoria, nombre, stock, precio_compra, precio_venta, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id_categoria, nombre, stock, precio_compra, precio_venta, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Producto creado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear producto:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando producto' 
+    });
+  }
+});
+
+// ACTUALIZAR PRODUCTO
+app.put('/api/productos/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      id_categoria, 
+      nombre, 
+      stock, 
+      precio_compra, 
+      precio_venta, 
+      estado 
+    } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE productos SET 
+        id_categoria = COALESCE($1, id_categoria),
+        nombre = COALESCE($2, nombre),
+        stock = COALESCE($3, stock),
+        precio_compra = COALESCE($4, precio_compra),
+        precio_venta = COALESCE($5, precio_venta),
+        estado = COALESCE($6, estado)
+       WHERE id_producto = $7 RETURNING *`,
+      [id_categoria, nombre, stock, precio_compra, precio_venta, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Producto no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Producto actualizado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar producto:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando producto' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE PRODUCTO
+app.put('/api/productos/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE productos SET estado = $1 WHERE id_producto = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Producto no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado del producto actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado producto:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado del producto' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE COMPRAS ====================
+
+// LISTAR COMPRAS
+app.get('/api/compras', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, p.nombre_razon_social as proveedor_nombre
+      FROM compras c
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor
+      ORDER BY c.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar compras:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo compras' 
+    });
+  }
+});
+
+// BUSCAR COMPRA POR ID
+app.get('/api/compras/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const compraResult = await pool.query(`
+      SELECT c.*, p.nombre_razon_social as proveedor_nombre
+      FROM compras c
+      LEFT JOIN proveedores p ON c.id_proveedor = p.id_proveedor
+      WHERE c.id_compra = $1
+    `, [id]);
+    
+    if (compraResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Compra no encontrada' 
+      });
+    }
+    
+    const detallesResult = await pool.query(`
+      SELECT dc.*, pr.nombre as producto_nombre
+      FROM detalle_compras dc
+      LEFT JOIN productos pr ON dc.id_producto = pr.id_producto
+      WHERE dc.id_compra = $1
+    `, [id]);
+    
+    const compra = compraResult.rows[0];
+    compra.detalles = detallesResult.rows;
+    
+    res.json({
+      success: true,
+      data: compra
+    });
+  } catch (error) {
+    console.error('Error buscar compra:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando compra' 
+    });
+  }
+});
+
+// CREAR COMPRA
+app.post('/api/compras', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      id_proveedor, 
+      fecha, 
+      total, 
+      numero_factura, 
+      estado = 1,
+      detalles 
+    } = req.body;
+    
+    if (!id_proveedor || !total || !detalles || !Array.isArray(detalles)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Proveedor, total y detalles son requeridos' 
+      });
+    }
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      const compraResult = await client.query(
+        `INSERT INTO compras 
+         (id_proveedor, fecha, total, numero_factura, estado) 
+         VALUES ($1, $2, $3, $4, $5) RETURNING id_compra`,
+        [id_proveedor, fecha || new Date(), total, numero_factura, estado]
+      );
+      
+      const compraId = compraResult.rows[0].id_compra;
+      
+      for (const detalle of detalles) {
+        await client.query(
+          `INSERT INTO detalle_compras 
+           (id_compra, id_producto, cantidad, precio, subtotal) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [compraId, detalle.id_producto, detalle.cantidad, detalle.precio, detalle.subtotal]
+        );
+        
+        await client.query(
+          'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
+          [detalle.cantidad, detalle.id_producto]
+        );
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: 'Compra creada exitosamente',
+        data: { id_compra: compraId }
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error crear compra:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando compra' 
+    });
+  }
+});
+
+// ANULAR COMPRA
+app.put('/api/compras/:id/anular', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { motivo } = req.body;
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      const detallesResult = await client.query(
+        'SELECT * FROM detalle_compras WHERE id_compra = $1',
+        [id]
+      );
+      
+      for (const detalle of detallesResult.rows) {
+        await client.query(
+          'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
+          [detalle.cantidad, detalle.id_producto]
+        );
+      }
+      
+      const result = await client.query(
+        'UPDATE compras SET estado = 0 WHERE id_compra = $1 RETURNING *',
+        [id]
+      );
+      
+      if (result.rows.length === 0) {
+        throw new Error('Compra no encontrada');
+      }
+      
+      await client.query(
+        'INSERT INTO logs_anulaciones (id_compra, motivo, fecha) VALUES ($1, $2, NOW())',
+        [id, motivo || 'Anulación por usuario']
+      );
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: 'Compra anulada exitosamente'
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error anular compra:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error anulando compra' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE CLIENTES ====================
+
+// LISTAR CLIENTES
+app.get('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM clientes ORDER BY nombre'
+    );
+    
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (error) {
+    console.error('Error listar clientes:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo clientes' 
+    });
+  }
+});
+
+// BUSCAR CLIENTE POR ID
+app.get('/api/clientes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM clientes WHERE id_cliente = $1',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Cliente no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error buscar cliente:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error buscando cliente' 
+    });
+  }
+});
+
+// CREAR CLIENTE
+app.post('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      nombre, 
+      tipo_documento, 
+      documento, 
+      telefono, 
+      direccion, 
+      estado = 1 
+    } = req.body;
+    
+    if (!nombre || !documento) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Nombre y documento son requeridos' 
+      });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO clientes 
+       (nombre, tipo_documento, documento, telefono, direccion, estado) 
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [nombre, tipo_documento, documento, telefono, direccion, estado]
+    );
+    
+    res.json({
+      success: true,
+      message: 'Cliente creado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error crear cliente:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando cliente' 
+    });
+  }
+});
+
+// ACTUALIZAR CLIENTE
+app.put('/api/clientes/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      nombre, 
+      tipo_documento, 
+      documento, 
+      telefono, 
+      direccion, 
+      estado 
+    } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE clientes SET 
+        nombre = COALESCE($1, nombre),
+        tipo_documento = COALESCE($2, tipo_documento),
+        documento = COALESCE($3, documento),
+        telefono = COALESCE($4, telefono),
+        direccion = COALESCE($5, direccion),
+        estado = COALESCE($6, estado)
+       WHERE id_cliente = $7 RETURNING *`,
+      [nombre, tipo_documento, documento, telefono, direccion, estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Cliente no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Cliente actualizado exitosamente',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error actualizar cliente:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando cliente' 
+    });
+  }
+});
+
+// CAMBIAR ESTADO DE CLIENTE
+app.put('/api/clientes/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado } = req.body;
+    
+    if (estado === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Estado requerido' 
+      });
+    }
+    
+    const result = await pool.query(
+      'UPDATE clientes SET estado = $1 WHERE id_cliente = $2 RETURNING *',
+      [estado, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Cliente no encontrado' 
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Estado del cliente actualizado',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Error cambiar estado cliente:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado del cliente' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE VENTAS ====================
+
+// LISTAR VENTAS
 app.get('/api/ventas', authenticateToken, async (req, res) => {
   try {
-    console.log('📊 Obteniendo ventas para usuario:', req.user.email);
-    
     const result = await pool.query(`
       SELECT v.*, c.nombre as cliente_nombre 
       FROM ventas v
@@ -526,12 +1818,10 @@ app.get('/api/ventas', authenticateToken, async (req, res) => {
     
     res.json({
       success: true,
-      message: '✅ Ventas obtenidas',
       data: result.rows
     });
-    
   } catch (error) {
-    console.error('💥 ERROR ventas:', error);
+    console.error('Error listar ventas:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Error obteniendo ventas' 
@@ -539,26 +1829,24 @@ app.get('/api/ventas', authenticateToken, async (req, res) => {
   }
 });
 
-// Detalles de venta
+// DETALLES DE VENTA
 app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
   try {
     const ventaId = req.params.id;
     
     const result = await pool.query(`
-      SELECT d.*, p.nombre as nombre_producto
-      FROM detalles_venta d
+      SELECT d.*, p.nombre as producto_nombre
+      FROM detalle_ventas d
       LEFT JOIN productos p ON d.id_producto = p.id_producto
       WHERE d.id_venta = $1
     `, [ventaId]);
     
     res.json({
       success: true,
-      message: '✅ Detalles obtenidos',
       data: result.rows
     });
-    
   } catch (error) {
-    console.error('💥 ERROR detalles venta:', error);
+    console.error('Error detalles venta:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Error obteniendo detalles' 
@@ -566,18 +1854,16 @@ app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
   }
 });
 
-// Crear/Actualizar venta
+// CREAR VENTA
 app.post('/api/ventas', authenticateToken, async (req, res) => {
   try {
     const { id_cliente, total, estado, fecha, detalles } = req.body;
     
-    // Iniciar transacción
     const client = await pool.connect();
     
     try {
       await client.query('BEGIN');
       
-      // Insertar venta
       const ventaResult = await client.query(
         `INSERT INTO ventas (id_cliente, total, estado, fecha) 
          VALUES ($1, $2, $3, $4) RETURNING id_venta`,
@@ -586,13 +1872,17 @@ app.post('/api/ventas', authenticateToken, async (req, res) => {
       
       const ventaId = ventaResult.rows[0].id_venta;
       
-      // Insertar detalles
       if (detalles && detalles.length > 0) {
         for (const detalle of detalles) {
           await client.query(
-            `INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal)
+            `INSERT INTO detalle_ventas (id_venta, id_producto, cantidad, precio, subtotal)
              VALUES ($1, $2, $3, $4, $5)`,
-            [ventaId, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
+            [ventaId, detalle.id_producto, detalle.cantidad, detalle.precio, detalle.subtotal]
+          );
+          
+          await client.query(
+            'UPDATE productos SET stock = stock - $1 WHERE id_producto = $2',
+            [detalle.cantidad, detalle.id_producto]
           );
         }
       }
@@ -621,62 +1911,7 @@ app.post('/api/ventas', authenticateToken, async (req, res) => {
   }
 });
 
-// Actualizar venta
-app.put('/api/ventas/:id', authenticateToken, async (req, res) => {
-  try {
-    const ventaId = req.params.id;
-    const { id_cliente, total, estado, fecha, detalles } = req.body;
-    
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-      
-      // Actualizar venta
-      await client.query(
-        `UPDATE ventas SET id_cliente = $1, total = $2, estado = $3, fecha = $4 
-         WHERE id_venta = $5`,
-        [id_cliente, total, estado, fecha, ventaId]
-      );
-      
-      // Eliminar detalles anteriores
-      await client.query('DELETE FROM detalles_venta WHERE id_venta = $1', [ventaId]);
-      
-      // Insertar nuevos detalles
-      if (detalles && detalles.length > 0) {
-        for (const detalle of detalles) {
-          await client.query(
-            `INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [ventaId, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
-          );
-        }
-      }
-      
-      await client.query('COMMIT');
-      
-      res.json({
-        success: true,
-        message: '✅ Venta actualizada exitosamente'
-      });
-      
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-    
-  } catch (error) {
-    console.error('💥 ERROR actualizar venta:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error actualizando venta' 
-    });
-  }
-});
-
-// Cambiar estado de venta
+// ACTUALIZAR ESTADO DE VENTA
 app.put('/api/ventas/:id/estado', authenticateToken, async (req, res) => {
   try {
     const ventaId = req.params.id;
@@ -701,27 +1936,48 @@ app.put('/api/ventas/:id/estado', authenticateToken, async (req, res) => {
   }
 });
 
-// Eliminar venta
-app.delete('/api/ventas/:id', authenticateToken, async (req, res) => {
+// ANULAR VENTA
+app.put('/api/ventas/:id/anular', authenticateToken, async (req, res) => {
   try {
-    const ventaId = req.params.id;
+    const { id } = req.params;
+    const { motivo } = req.body;
     
     const client = await pool.connect();
     
     try {
       await client.query('BEGIN');
       
-      // Eliminar detalles primero
-      await client.query('DELETE FROM detalles_venta WHERE id_venta = $1', [ventaId]);
+      const detallesResult = await client.query(
+        'SELECT * FROM detalle_ventas WHERE id_venta = $1',
+        [id]
+      );
       
-      // Eliminar venta
-      await client.query('DELETE FROM ventas WHERE id_venta = $1', [ventaId]);
+      for (const detalle of detallesResult.rows) {
+        await client.query(
+          'UPDATE productos SET stock = stock + $1 WHERE id_producto = $2',
+          [detalle.cantidad, detalle.id_producto]
+        );
+      }
+      
+      const result = await client.query(
+        'UPDATE ventas SET estado = 0 WHERE id_venta = $1 RETURNING *',
+        [id]
+      );
+      
+      if (result.rows.length === 0) {
+        throw new Error('Venta no encontrada');
+      }
+      
+      await client.query(
+        'INSERT INTO logs_anulaciones (id_venta, motivo, fecha) VALUES ($1, $2, NOW())',
+        [id, motivo || 'Anulación por usuario']
+      );
       
       await client.query('COMMIT');
       
       res.json({
         success: true,
-        message: '✅ Venta eliminada'
+        message: 'Venta anulada exitosamente'
       });
       
     } catch (error) {
@@ -730,66 +1986,50 @@ app.delete('/api/ventas/:id', authenticateToken, async (req, res) => {
     } finally {
       client.release();
     }
-    
   } catch (error) {
-    console.error('💥 ERROR eliminar venta:', error);
+    console.error('Error anular venta:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Error eliminando venta' 
+      message: 'Error anulando venta' 
     });
   }
 });
 
-// ==================== CLIENTES ====================
-app.get('/api/clientes', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM clientes ORDER BY nombre');
-    
-    res.json({
-      success: true,
-      message: '✅ Clientes obtenidos',
-      data: result.rows
-    });
-    
-  } catch (error) {
-    console.error('💥 ERROR clientes:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error obteniendo clientes' 
-    });
-  }
-});
+// ==================== PERMISOS ====================
 
-// ==================== PRODUCTOS ====================
-app.get('/api/productos', authenticateToken, async (req, res) => {
+// LISTAR PERMISOS
+app.get('/api/permisos', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM productos ORDER BY nombre');
+    const result = await pool.query(
+      'SELECT * FROM permisos ORDER BY id_permiso'
+    );
     
     res.json({
       success: true,
-      message: '✅ Productos obtenidos',
       data: result.rows
     });
-    
   } catch (error) {
-    console.error('💥 ERROR productos:', error);
+    console.error('Error listar permisos:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Error obteniendo productos' 
+      message: 'Error obteniendo permisos' 
     });
   }
 });
 
 // ==================== ENDPOINTS DE PRUEBA ====================
+
+// TEST API
 app.get('/api/test', (req, res) => {
   res.json({
     success: true,
     message: '✅ API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    version: '8.0.0'
+    version: '9.0.0'
   });
 });
 
+// CHECK DATABASE
 app.get('/api/check-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW() as time, version() as version');
@@ -810,23 +2050,29 @@ app.get('/api/check-db', async (req, res) => {
 // ==================== INICIAR SERVIDOR ====================
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(70));
-  console.log('🚀 API STOCKBAR - VERSIÓN 8.0');
+  console.log('🚀 API STOCKBAR - VERSIÓN 9.0 (CRUD COMPLETO)');
   console.log('='.repeat(70));
-  console.log('✅ SISTEMA COMPLETO ACTIVADO');
-  console.log('✅ EMAIL CONFIGURADO (GMAIL)');
+  console.log('✅ TODOS LOS MÓDULOS ACTIVADOS');
+  console.log('✅ CRUD COMPLETO IMPLEMENTADO');
   console.log('✅ BASE DE DATOS CONECTADA');
+  console.log('✅ EMAIL CONFIGURADO (GMAIL)');
   console.log('='.repeat(70));
   console.log(`📡 Puerto: ${PORT}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🌍 URL pública: https://api-stockbar.onrender.com`);
   console.log('='.repeat(70));
-  console.log('✅ Endpoints disponibles:');
+  console.log('✅ Endpoints principales:');
   console.log('   POST /api/login              - Iniciar sesión');
-  console.log('   POST /api/send-recovery-email - Recuperar contraseña');
+  console.log('   GET  /api/roles              - Listar roles');
+  console.log('   POST /api/roles              - Crear rol');
+  console.log('   GET  /api/usuarios           - Listar usuarios');
+  console.log('   POST /api/usuarios           - Crear usuario');
+  console.log('   GET  /api/productos          - Listar productos');
+  console.log('   GET  /api/compras            - Listar compras');
+  console.log('   POST /api/compras            - Crear compra');
   console.log('   GET  /api/ventas             - Listar ventas');
   console.log('   POST /api/ventas             - Crear venta');
-  console.log('   GET  /api/clientes           - Listar clientes');
-  console.log('   GET  /api/productos          - Listar productos');
+  console.log('   POST /api/send-recovery-email - Recuperar contraseña');
   console.log('='.repeat(70));
   console.log('📧 Email configurado: thebar752@gmail.com');
   console.log('🔐 Login por defecto: thebar752@gmail.com | admin123');
@@ -835,7 +2081,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(70));
 });
 
-// Manejo de cierre
+// MANEJO DE CIERRE
 process.on('SIGTERM', () => {
   console.log('🛑 Cerrando servidor...');
   server.close(() => {
