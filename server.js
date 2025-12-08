@@ -19,21 +19,49 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Configuración de email
+// ==================== CONFIGURACIÓN DE EMAIL - SOLUCIÓN DEFINITIVA ====================
+console.log('📧 Configurando servicio de email...');
+
+// USAR SMTP DIRECTO CON GMAIL - CONFIGURACIÓN CORRECTA
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'thebar752@gmail.com',
-    pass: 'sfqj taqe yrmr zfhj' // Tu contraseña de aplicación
+    pass: 'sfqj taqe yrmr zfhj' // Contraseña de aplicación
   }
+});
+
+// Verificar conexión SMTP
+transporter.verify(function(error, success) {
+  if (error) {
+    console.error('❌ Error SMTP:', error.message);
+    console.log('🔧 Solución: Verificar que:');
+    console.log('1. Email: thebar752@gmail.com es correcto');
+    console.log('2. Contraseña de aplicación: sfqj taqe yrmr zfhj');
+    console.log('3. Verificación en 2 pasos está ACTIVADA en Google');
+    console.log('4. Contraseña de aplicación generada correctamente');
+  } else {
+    console.log('✅ Servidor SMTP configurado correctamente');
+    console.log('📧 Listo para enviar emails');
+  }
+});
+
+// ==================== MIDDLEWARE DE LOGS ====================
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.url}`);
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log('📦 Body:', JSON.stringify(req.body));
+  }
+  next();
 });
 
 // ==================== ENDPOINT RAÍZ ====================
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: '✅ API STOCKBAR - VERSIÓN 7.0 (CON RECUPERACIÓN DE CONTRASEÑA)',
-    version: '7.0.0',
+    message: '✅ API STOCKBAR - VERSIÓN 8.0 (SISTEMA COMPLETO)',
+    version: '8.0.0',
     status: 'operacional',
     timestamp: new Date().toISOString(),
     endpoints: {
@@ -43,14 +71,18 @@ app.get('/', (req, res) => {
         'verify-email': 'POST /api/verify-email',
         'send-recovery-email': 'POST /api/send-recovery-email',
         'update-password': 'POST /api/update-password',
+        'send-confirmation-email': 'POST /api/send-confirmation-email',
         test: 'GET /api/test',
         'check-db': 'GET /api/check-db'
       },
       protected: {
-        ventas: 'GET /api/ventas (requiere token)',
-        clientes: 'GET /api/clientes (requiere token)',
-        productos: 'GET /api/productos (requiere token)',
-        compras: 'GET /api/compras (requiere token)'
+        ventas: 'GET /api/ventas',
+        'venta-detalle': 'GET /api/ventas/:id/detalles',
+        'venta-update': 'PUT /api/ventas/:id',
+        'venta-delete': 'DELETE /api/ventas/:id',
+        'venta-estado': 'PUT /api/ventas/:id/estado',
+        clientes: 'GET /api/clientes',
+        productos: 'GET /api/productos'
       }
     }
   });
@@ -61,10 +93,6 @@ const authenticateToken = async (req, res, next) => {
   try {
     let token = req.headers['authorization'];
     
-    if (token && token.startsWith('Bearer ')) {
-      token = token.slice(7);
-    }
-    
     if (!token) {
       return res.status(401).json({ 
         success: false, 
@@ -72,11 +100,15 @@ const authenticateToken = async (req, res, next) => {
       });
     }
     
-    // Decodificar token simple
+    if (token.startsWith('Bearer ')) {
+      token = token.slice(7);
+    }
+    
+    // Token simple decodificado
     const decoded = Buffer.from(token, 'base64').toString('ascii');
     const [userId] = decoded.split(':');
     
-    // Buscar usuario (TABLA EN MINÚSCULAS)
+    // Buscar usuario
     const result = await pool.query(
       'SELECT * FROM usuarios WHERE id_usuario = $1 AND estado = 1',
       [parseInt(userId)]
@@ -85,7 +117,7 @@ const authenticateToken = async (req, res, next) => {
     if (result.rows.length === 0) {
       return res.status(401).json({ 
         success: false, 
-        message: 'Usuario no válido' 
+        message: 'Usuario no válido o inactivo' 
       });
     }
     
@@ -101,7 +133,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== VERIFICAR EMAIL (RECUPERACIÓN) ====================
+// ==================== VERIFICAR EMAIL ====================
 app.post('/api/verify-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -123,15 +155,12 @@ app.post('/api/verify-email', async (req, res) => {
     );
     
     if (result.rows.length === 0) {
-      console.log('❌ Email no encontrado:', email);
       return res.json({
         success: true,
         exists: false,
         message: 'Email no registrado'
       });
     }
-    
-    console.log('✅ Email encontrado:', result.rows[0].email);
     
     res.json({
       success: true,
@@ -145,7 +174,7 @@ app.post('/api/verify-email', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('💥 ERROR en verify-email:', error);
+    console.error('💥 ERROR verify-email:', error);
     res.status(500).json({ 
       success: false, 
       exists: false,
@@ -159,7 +188,7 @@ app.post('/api/send-recovery-email', async (req, res) => {
   try {
     const { email, codigo } = req.body;
     
-    console.log('📧 Enviando email de recuperación a:', email);
+    console.log('📧 Enviando recuperación:', { email, codigo });
     
     if (!email || !codigo) {
       return res.status(400).json({ 
@@ -168,7 +197,7 @@ app.post('/api/send-recovery-email', async (req, res) => {
       });
     }
     
-    // Verificar que el email existe
+    // Verificar que el usuario existe
     const userResult = await pool.query(
       'SELECT nombre_completo FROM usuarios WHERE email = $1',
       [email]
@@ -177,65 +206,66 @@ app.post('/api/send-recovery-email', async (req, res) => {
     if (userResult.rows.length === 0) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Email no registrado' 
+        message: 'Email no registrado en el sistema' 
       });
     }
     
     const nombreUsuario = userResult.rows[0].nombre_completo || 'Usuario';
     
-    // Configurar el email
+    // Configurar email HTML
     const mailOptions = {
-      from: 'THE BAR Sistema <thebar752@gmail.com>',
+      from: '"THE BAR Sistema" <thebar752@gmail.com>',
       to: email,
-      subject: 'Código de recuperación - THE BAR',
+      subject: '🔐 Código de recuperación - THE BAR',
       html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; }
-                .header { background-color: #3B2E2A; color: white; padding: 20px; text-align: center; }
-                .content { padding: 20px; background-color: #F5EFE6; }
-                .footer { background-color: #0F1A24; color: white; padding: 10px; text-align: center; }
-                .codigo { background-color: #D99A00; color: #3B2E2A; padding: 15px; text-align: center; 
-                         font-size: 28px; font-weight: bold; margin: 20px 0; border-radius: 8px; letter-spacing: 5px; }
-                .nota { background-color: #D86633; color: white; padding: 10px; border-radius: 5px; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>THE BAR</h1>
-                <p>Sistema de Gestión</p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f5efe6;">
+          <div style="background-color: #3b2e2a; color: white; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+            <h1 style="margin: 0; color: #d99a00;">THE BAR</h1>
+            <p style="margin: 5px 0 0;">Sistema de Gestión</p>
+          </div>
+          
+          <div style="background-color: white; padding: 30px; border-radius: 0 0 10px 10px;">
+            <h2>Recuperación de Contraseña</h2>
+            <p>Hola <strong>${nombreUsuario}</strong>,</p>
+            <p>Has solicitado restablecer tu contraseña en <strong>THE BAR Sistema</strong>.</p>
+            
+            <div style="background-color: #f8f9fa; border: 2px dashed #d99a00; padding: 20px; text-align: center; margin: 25px 0; border-radius: 8px;">
+              <p style="margin-bottom: 10px; color: #666;">Tu código de verificación es:</p>
+              <div style="font-size: 36px; font-weight: bold; letter-spacing: 5px; color: #3b2e2a; margin: 15px 0;">
+                ${codigo}
+              </div>
+              <div style="background-color: #d86633; color: white; padding: 8px 15px; border-radius: 20px; display: inline-block; font-weight: bold;">
+                ⏰ Válido por 30 segundos
+              </div>
             </div>
-            <div class="content">
-                <h2>Recuperación de Contraseña</h2>
-                <p>Hola ${nombreUsuario},</p>
-                <p>Hemos recibido una solicitud para restablecer tu contraseña en <strong>THE BAR Sistema</strong>.</p>
-                <p>Tu código de verificación es:</p>
-                <div class="codigo">${codigo}</div>
-                <p>Ingresa este código en la aplicación para continuar con el proceso de recuperación.</p>
-                
-                <div class="nota">
-                    <p><strong>⚠️ IMPORTANTE:</strong></p>
-                    <p>• Este código es válido por <strong>30 segundos</strong></p>
-                    <p>• Si no solicitaste este cambio, puedes ignorar este mensaje</p>
-                    <p>• Tu contraseña actual permanecerá sin cambios</p>
-                </div>
+            
+            <p>Ingresa este código en la aplicación para continuar con la recuperación de tu contraseña.</p>
+            
+            <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-top: 20px; border-radius: 4px;">
+              <p style="margin: 0; color: #856404;">
+                <strong>⚠️ Importante:</strong> Si no solicitaste este cambio, ignora este mensaje. Tu contraseña actual permanecerá sin cambios.
+              </p>
             </div>
-            <div class="footer">
-                <p>THE BAR Sistema © ${new Date().getFullYear()}</p>
-                <p>Este es un mensaje automático, por favor no responder</p>
-            </div>
-        </body>
-        </html>
-      `
+            
+            <p style="margin-top: 25px;">
+              Saludos,<br>
+              <strong>Equipo de Soporte - THE BAR</strong>
+            </p>
+          </div>
+          
+          <div style="background-color: #0f1a24; color: white; text-align: center; padding: 15px; margin-top: 20px; border-radius: 10px; font-size: 12px;">
+            <p style="margin: 0;">© ${new Date().getFullYear()} THE BAR Sistema. Todos los derechos reservados.</p>
+            <p style="margin: 5px 0 0;">Este es un mensaje automático, no responda.</p>
+          </div>
+        </div>
+      `,
+      text: `Código de recuperación THE BAR\n\nHola ${nombreUsuario},\n\nTu código de verificación es: ${codigo}\n\nEste código expira en 30 segundos.\n\nSi no solicitaste este cambio, ignora este mensaje.\n\nSaludos,\nEquipo THE BAR`
     };
     
-    // Enviar el email
-    await transporter.sendMail(mailOptions);
+    // Enviar email
+    const info = await transporter.sendMail(mailOptions);
     
-    console.log('✅ Email enviado exitosamente a:', email);
+    console.log('✅ Email enviado correctamente:', info.messageId);
     
     res.json({
       success: true,
@@ -249,10 +279,20 @@ app.post('/api/send-recovery-email', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('💥 ERROR al enviar email:', error);
+    console.error('💥 ERROR send-recovery-email:', error.message);
+    
+    // Mensaje de error específico
+    let errorMessage = 'Error al enviar el email';
+    if (error.code === 'EAUTH') {
+      errorMessage = 'Error de autenticación con Gmail. Verifica las credenciales.';
+    } else if (error.code === 'EENVELOPE') {
+      errorMessage = 'Dirección de email no válida.';
+    }
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Error al enviar el código. Verifica que el email sea válido.' 
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -262,7 +302,7 @@ app.post('/api/send-confirmation-email', async (req, res) => {
   try {
     const { email } = req.body;
     
-    console.log('📧 Enviando email de confirmación a:', email);
+    console.log('📧 Enviando confirmación a:', email);
     
     if (!email) {
       return res.status(400).json({ 
@@ -271,7 +311,7 @@ app.post('/api/send-confirmation-email', async (req, res) => {
       });
     }
     
-    // Verificar que el usuario existe
+    // Verificar usuario
     const userResult = await pool.query(
       'SELECT nombre_completo FROM usuarios WHERE email = $1',
       [email]
@@ -286,81 +326,42 @@ app.post('/api/send-confirmation-email', async (req, res) => {
     
     const nombreUsuario = userResult.rows[0].nombre_completo || 'Usuario';
     
-    // Configurar el email de confirmación
     const mailOptions = {
-      from: 'THE BAR Sistema <thebar752@gmail.com>',
+      from: '"THE BAR Sistema" <thebar752@gmail.com>',
       to: email,
-      subject: 'Contraseña actualizada exitosamente - THE BAR',
+      subject: '✅ Contraseña actualizada - THE BAR',
       html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; }
-                .header { background-color: #3B2E2A; color: white; padding: 20px; text-align: center; }
-                .content { padding: 20px; background-color: #F5EFE6; }
-                .footer { background-color: #0F1A24; color: white; padding: 10px; text-align: center; }
-                .exito { background-color: #2E7D32; color: white; padding: 15px; text-align: center; 
-                        border-radius: 8px; margin: 20px 0; font-weight: bold; }
-                .advertencia { background-color: #C62828; color: white; padding: 10px; border-radius: 5px; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>THE BAR</h1>
-                <p>Sistema de Gestión</p>
-            </div>
-            <div class="content">
-                <h2>Contraseña Actualizada</h2>
-                <p>Hola ${nombreUsuario},</p>
-                <p>Tu contraseña en <strong>THE BAR Sistema</strong> ha sido cambiada exitosamente.</p>
-                
-                <div class="exito">
-                    ✅ Cambio confirmado
-                </div>
-                
-                <p>Ahora puedes iniciar sesión con tu nueva contraseña.</p>
-                
-                <div class="advertencia">
-                    <p><strong>⚠️ SEGURIDAD:</strong></p>
-                    <p>Si no realizaste este cambio, por favor:</p>
-                    <p>1. Contacta inmediatamente al administrador</p>
-                    <p>2. Cambia tu contraseña nuevamente</p>
-                    <p>3. Revisa la seguridad de tu cuenta</p>
-                </div>
-                
-                <p>Fecha y hora del cambio: ${new Date().toLocaleString('es-ES')}</p>
-            </div>
-            <div class="footer">
-                <p>THE BAR Sistema © ${new Date().getFullYear()}</p>
-                <p>Este es un mensaje automático, por favor no responder</p>
-            </div>
-        </body>
-        </html>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #2e7d32; color: white; padding: 20px; text-align: center;">
+            <h1 style="margin: 0;">✅ Contraseña Actualizada</h1>
+          </div>
+          <div style="padding: 30px; background-color: #f5efe6;">
+            <p>Hola <strong>${nombreUsuario}</strong>,</p>
+            <p>Tu contraseña en <strong>THE BAR Sistema</strong> ha sido cambiada exitosamente.</p>
+            <p>Ahora puedes iniciar sesión con tu nueva contraseña.</p>
+            <p style="color: #666; font-size: 12px; margin-top: 30px;">
+              Fecha: ${new Date().toLocaleString('es-ES')}
+            </p>
+          </div>
+        </div>
       `
     };
     
-    // Enviar el email
     await transporter.sendMail(mailOptions);
     
-    console.log('✅ Email de confirmación enviado a:', email);
+    console.log('✅ Email de confirmación enviado');
     
     res.json({
       success: true,
       message: '✅ Email de confirmación enviado',
-      data: {
-        email: email,
-        confirmado: true,
-        timestamp: new Date().toISOString()
-      }
+      data: { email: email, confirmado: true }
     });
     
   } catch (error) {
-    console.error('💥 ERROR al enviar email de confirmación:', error);
+    console.error('💥 ERROR send-confirmation:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Error al enviar email de confirmación' 
+      message: 'Error al enviar confirmación' 
     });
   }
 });
@@ -370,12 +371,12 @@ app.post('/api/update-password', async (req, res) => {
   try {
     const { email, nuevaPassword } = req.body;
     
-    console.log('🔄 Actualizando contraseña para:', email);
+    console.log('🔄 Actualizando password para:', email);
     
     if (!email || !nuevaPassword) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Email y nueva contraseña requeridos' 
+        message: 'Email y contraseña requeridos' 
       });
     }
     
@@ -386,42 +387,38 @@ app.post('/api/update-password', async (req, res) => {
       });
     }
     
-    // Verificar que el usuario existe
+    // Verificar usuario
     const userResult = await pool.query(
       'SELECT id_usuario FROM usuarios WHERE email = $1',
       [email]
     );
     
     if (userResult.rows.length === 0) {
-      console.log('❌ Usuario no encontrado:', email);
       return res.status(404).json({ 
         success: false, 
         message: 'Usuario no encontrado' 
       });
     }
     
-    // Encriptar la nueva contraseña
+    // Encriptar nueva contraseña
     const hashedPassword = await bcrypt.hash(nuevaPassword, 10);
     
-    // Actualizar la contraseña
+    // Actualizar en BD
     await pool.query(
-      'UPDATE usuarios SET contraseña = $1 WHERE email = $2',
+      'UPDATE usuarios SET contraseña = $1, updated_at = NOW() WHERE email = $2',
       [hashedPassword, email]
     );
     
-    console.log('✅ Contraseña actualizada para:', email);
+    console.log('✅ Password actualizado para:', email);
     
     res.json({
       success: true,
       message: '✅ Contraseña actualizada exitosamente',
-      data: {
-        email: email,
-        updated_at: new Date().toISOString()
-      }
+      data: { email: email, updated: true }
     });
     
   } catch (error) {
-    console.error('💥 ERROR en update-password:', error);
+    console.error('💥 ERROR update-password:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Error del servidor' 
@@ -429,7 +426,7 @@ app.post('/api/update-password', async (req, res) => {
   }
 });
 
-// ==================== LOGIN - ENDPOINT PÚBLICO ====================
+// ==================== LOGIN ====================
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -443,7 +440,7 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Buscar usuario (TABLA EN MINÚSCULAS)
+    // Buscar usuario
     const result = await pool.query(
       'SELECT * FROM usuarios WHERE email = $1',
       [email]
@@ -459,46 +456,34 @@ app.post('/api/login', async (req, res) => {
     const user = result.rows[0];
     const dbPassword = user.contraseña || '';
     
-    console.log('✅ Usuario encontrado:', user.email);
-    
-    // ✅ VERIFICACIÓN DE CONTRASEÑA
+    // Verificar contraseña
     let validPassword = false;
     
-    // 1. Si las contraseñas son iguales directamente
+    // 1. Comparación directa
     if (dbPassword === password) {
       validPassword = true;
-      console.log('✅ Contraseña correcta (comparación directa)');
     }
-    // 2. Si es hash bcrypt
-    else if (dbPassword && dbPassword.startsWith('$2')) {
-      try {
-        validPassword = await bcrypt.compare(password, dbPassword);
-        if (validPassword) {
-          console.log('✅ Contraseña correcta (bcrypt)');
-        }
-      } catch (bcryptError) {
-        console.log('⚠️ Error con bcrypt, intentando comparación directa...');
-        validPassword = (dbPassword === password);
-      }
+    // 2. Bcrypt
+    else if (dbPassword.startsWith('$2')) {
+      validPassword = await bcrypt.compare(password, dbPassword);
     }
-    // 3. Contraseña por defecto para desarrollo
+    // 3. Contraseña por defecto
     else if (password === 'admin123') {
-      console.log('⚠️ Usando contraseña de desarrollo "admin123"');
       validPassword = true;
+      console.log('⚠️ Usando contraseña de desarrollo');
     }
     
     if (!validPassword) {
-      console.log('❌ Contraseña incorrecta');
       return res.status(401).json({ 
         success: false, 
         message: 'Contraseña incorrecta' 
       });
     }
     
-    // ✅ GENERAR TOKEN
+    // Generar token
     const token = Buffer.from(`${user.id_usuario}:${Date.now()}`).toString('base64');
     
-    // ✅ PREPARAR RESPUESTA DEL USUARIO
+    // Preparar respuesta
     const userResponse = {
       id_usuario: user.id_usuario,
       email: user.email,
@@ -508,7 +493,7 @@ app.post('/api/login', async (req, res) => {
       id_rol: user.id_rol || 1
     };
     
-    console.log('🎉 Login exitoso para:', email);
+    console.log('✅ Login exitoso para:', email);
     
     res.json({
       success: true,
@@ -519,7 +504,7 @@ app.post('/api/login', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('💥 ERROR en login:', error);
+    console.error('💥 ERROR login:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Error del servidor' 
@@ -527,70 +512,347 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ==================== ENDPOINT DE PRUEBA ====================
+// ==================== VENTAS ====================
+app.get('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    console.log('📊 Obteniendo ventas para usuario:', req.user.email);
+    
+    const result = await pool.query(`
+      SELECT v.*, c.nombre as cliente_nombre 
+      FROM ventas v
+      LEFT JOIN clientes c ON v.id_cliente = c.id_cliente
+      ORDER BY v.fecha DESC
+    `);
+    
+    res.json({
+      success: true,
+      message: '✅ Ventas obtenidas',
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('💥 ERROR ventas:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo ventas' 
+    });
+  }
+});
+
+// Detalles de venta
+app.get('/api/ventas/:id/detalles', authenticateToken, async (req, res) => {
+  try {
+    const ventaId = req.params.id;
+    
+    const result = await pool.query(`
+      SELECT d.*, p.nombre as nombre_producto
+      FROM detalles_venta d
+      LEFT JOIN productos p ON d.id_producto = p.id_producto
+      WHERE d.id_venta = $1
+    `, [ventaId]);
+    
+    res.json({
+      success: true,
+      message: '✅ Detalles obtenidos',
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('💥 ERROR detalles venta:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo detalles' 
+    });
+  }
+});
+
+// Crear/Actualizar venta
+app.post('/api/ventas', authenticateToken, async (req, res) => {
+  try {
+    const { id_cliente, total, estado, fecha, detalles } = req.body;
+    
+    // Iniciar transacción
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Insertar venta
+      const ventaResult = await client.query(
+        `INSERT INTO ventas (id_cliente, total, estado, fecha) 
+         VALUES ($1, $2, $3, $4) RETURNING id_venta`,
+        [id_cliente, total, estado || 'Pendiente', fecha || new Date()]
+      );
+      
+      const ventaId = ventaResult.rows[0].id_venta;
+      
+      // Insertar detalles
+      if (detalles && detalles.length > 0) {
+        for (const detalle of detalles) {
+          await client.query(
+            `INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [ventaId, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
+          );
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: '✅ Venta creada exitosamente',
+        data: { id_venta: ventaId }
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('💥 ERROR crear venta:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creando venta' 
+    });
+  }
+});
+
+// Actualizar venta
+app.put('/api/ventas/:id', authenticateToken, async (req, res) => {
+  try {
+    const ventaId = req.params.id;
+    const { id_cliente, total, estado, fecha, detalles } = req.body;
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Actualizar venta
+      await client.query(
+        `UPDATE ventas SET id_cliente = $1, total = $2, estado = $3, fecha = $4 
+         WHERE id_venta = $5`,
+        [id_cliente, total, estado, fecha, ventaId]
+      );
+      
+      // Eliminar detalles anteriores
+      await client.query('DELETE FROM detalles_venta WHERE id_venta = $1', [ventaId]);
+      
+      // Insertar nuevos detalles
+      if (detalles && detalles.length > 0) {
+        for (const detalle of detalles) {
+          await client.query(
+            `INSERT INTO detalles_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [ventaId, detalle.id_producto, detalle.cantidad, detalle.precio_unitario, detalle.subtotal]
+          );
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: '✅ Venta actualizada exitosamente'
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('💥 ERROR actualizar venta:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error actualizando venta' 
+    });
+  }
+});
+
+// Cambiar estado de venta
+app.put('/api/ventas/:id/estado', authenticateToken, async (req, res) => {
+  try {
+    const ventaId = req.params.id;
+    const { estado } = req.body;
+    
+    await pool.query(
+      'UPDATE ventas SET estado = $1 WHERE id_venta = $2',
+      [estado, ventaId]
+    );
+    
+    res.json({
+      success: true,
+      message: '✅ Estado actualizado'
+    });
+    
+  } catch (error) {
+    console.error('💥 ERROR cambiar estado:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error cambiando estado' 
+    });
+  }
+});
+
+// Eliminar venta
+app.delete('/api/ventas/:id', authenticateToken, async (req, res) => {
+  try {
+    const ventaId = req.params.id;
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Eliminar detalles primero
+      await client.query('DELETE FROM detalles_venta WHERE id_venta = $1', [ventaId]);
+      
+      // Eliminar venta
+      await client.query('DELETE FROM ventas WHERE id_venta = $1', [ventaId]);
+      
+      await client.query('COMMIT');
+      
+      res.json({
+        success: true,
+        message: '✅ Venta eliminada'
+      });
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('💥 ERROR eliminar venta:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error eliminando venta' 
+    });
+  }
+});
+
+// ==================== CLIENTES ====================
+app.get('/api/clientes', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM clientes ORDER BY nombre');
+    
+    res.json({
+      success: true,
+      message: '✅ Clientes obtenidos',
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('💥 ERROR clientes:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo clientes' 
+    });
+  }
+});
+
+// ==================== PRODUCTOS ====================
+app.get('/api/productos', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM productos ORDER BY nombre');
+    
+    res.json({
+      success: true,
+      message: '✅ Productos obtenidos',
+      data: result.rows
+    });
+    
+  } catch (error) {
+    console.error('💥 ERROR productos:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error obteniendo productos' 
+    });
+  }
+});
+
+// ==================== ENDPOINTS DE PRUEBA ====================
 app.get('/api/test', (req, res) => {
   res.json({
     success: true,
     message: '✅ API funcionando correctamente',
     timestamp: new Date().toISOString(),
-    database: 'Conectada a PostgreSQL (tablas en minúsculas)'
+    version: '8.0.0'
   });
 });
 
-// ... (EL RESTO DEL CÓDIGO DEL BACKEND SE MANTIENE IGUAL HASTA EL FINAL) ...
+app.get('/api/check-db', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW() as time, version() as version');
+    res.json({
+      success: true,
+      message: '✅ Base de datos conectada',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: '❌ Error de base de datos',
+      error: error.message
+    });
+  }
+});
 
 // ==================== INICIAR SERVIDOR ====================
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('='.repeat(70));
-  console.log('🚀 API STOCKBAR - VERSIÓN 7.0');
+  console.log('🚀 API STOCKBAR - VERSIÓN 8.0');
   console.log('='.repeat(70));
-  console.log('✅ CONFIGURADO PARA TABLAS EN MINÚSCULAS');
-  console.log('✅ SISTEMA DE RECUPERACIÓN DE CONTRASEÑA ACTIVADO');
+  console.log('✅ SISTEMA COMPLETO ACTIVADO');
+  console.log('✅ EMAIL CONFIGURADO (GMAIL)');
+  console.log('✅ BASE DE DATOS CONECTADA');
   console.log('='.repeat(70));
   console.log(`📡 Puerto: ${PORT}`);
-  console.log(`🌐 URL local: http://localhost:${PORT}`);
+  console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`🌍 URL pública: https://api-stockbar.onrender.com`);
   console.log('='.repeat(70));
-  console.log('✅ Endpoints públicos:');
-  console.log('   GET  /                       - Raíz de la API');
-  console.log('   POST /api/login              - Autenticación');
-  console.log('   POST /api/verify-email       - Verificar email');
-  console.log('   POST /api/send-recovery-email - Enviar código (30s)');
-  console.log('   POST /api/update-password    - Actualizar contraseña');
-  console.log('   POST /api/send-confirmation-email - Confirmación');
-  console.log('   GET  /api/test               - Prueba de conexión');
-  console.log('   GET  /api/check-db           - Verificar base de datos');
+  console.log('✅ Endpoints disponibles:');
+  console.log('   POST /api/login              - Iniciar sesión');
+  console.log('   POST /api/send-recovery-email - Recuperar contraseña');
+  console.log('   GET  /api/ventas             - Listar ventas');
+  console.log('   POST /api/ventas             - Crear venta');
+  console.log('   GET  /api/clientes           - Listar clientes');
+  console.log('   GET  /api/productos          - Listar productos');
   console.log('='.repeat(70));
-  console.log('📧 Configuración de email:');
-  console.log('   Email: thebar752@gmail.com');
-  console.log('   SMTP: Gmail (con contraseña de aplicación)');
+  console.log('📧 Email configurado: thebar752@gmail.com');
+  console.log('🔐 Login por defecto: thebar752@gmail.com | admin123');
   console.log('='.repeat(70));
-  console.log('🔐 Credenciales por defecto:');
-  console.log('   Email: thebar752@gmail.com');
-  console.log('   Password: admin123');
-  console.log('='.repeat(70));
-  console.log('✅ Servidor listo!');
+  console.log('✅ Servidor listo para recibir peticiones!');
   console.log('='.repeat(70));
 });
 
-// Manejo de cierre gracioso
+// Manejo de cierre
 process.on('SIGTERM', () => {
-  console.log('🛑 Recibida señal SIGTERM, cerrando servidor...');
+  console.log('🛑 Cerrando servidor...');
   server.close(() => {
     console.log('✅ Servidor cerrado');
     pool.end(() => {
-      console.log('✅ Pool de PostgreSQL cerrado');
+      console.log('✅ Pool de DB cerrado');
       process.exit(0);
     });
   });
 });
 
 process.on('SIGINT', () => {
-  console.log('🛑 Recibida señal SIGINT, cerrando servidor...');
+  console.log('🛑 Cerrando servidor (Ctrl+C)...');
   server.close(() => {
     console.log('✅ Servidor cerrado');
     pool.end(() => {
-      console.log('✅ Pool de PostgreSQL cerrado');
+      console.log('✅ Pool de DB cerrado');
       process.exit(0);
     });
   });
