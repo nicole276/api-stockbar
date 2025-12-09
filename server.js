@@ -2507,7 +2507,7 @@ app.put('/api/ventas/:id', authenticateToken, async (req, res) => {
       });
     }
     
-    if (ventaExistente.rows[0].estado !== 'Pendiente') {
+    if (ventaExistente.rows[0].estado !== 2) {
       return res.status(400).json({
         success: false,
         message: 'Solo se pueden editar ventas pendientes'
