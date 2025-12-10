@@ -290,7 +290,7 @@ app.post('/api/update-password', async (req, res) => {
   }
 });
 
-// LOGIN
+// LOGIN (VERSIÓN CORREGIDA)
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -302,8 +302,9 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
+    // ⭐⭐ USAR COMILLAS en el SELECT ⭐⭐
     const result = await pool.query(
-      'SELECT * FROM usuarios WHERE email = $1',
+      'SELECT id_usuario, email, nombre_completo, usuario, estado, id_rol, "contraseña" as contraseña FROM usuarios WHERE email = $1',
       [email]
     );
     
@@ -317,19 +318,28 @@ app.post('/api/login', async (req, res) => {
     const user = result.rows[0];
     const dbPassword = user.contraseña || '';
     
+    console.log('🔐 Login - Password en BD:', dbPassword ? 'PRESENTE' : 'VACÍO');
+    console.log('🔐 Login - Password recibida:', password);
+    
     let validPassword = false;
     
+    // Verificación de password
     if (dbPassword === password) {
       validPassword = true;
+      console.log('✅ Password coincide directamente');
     }
     else if (dbPassword.startsWith('$2')) {
+      // Es hash bcrypt
       validPassword = await bcrypt.compare(password, dbPassword);
+      console.log('✅ Comparación bcrypt:', validPassword);
     }
     else if (password === 'admin123') {
       validPassword = true;
+      console.log('✅ Password admin por defecto');
     }
     
     if (!validPassword) {
+      console.log('❌ Password inválida');
       return res.status(401).json({ 
         success: false, 
         message: 'Contraseña incorrecta' 
@@ -363,7 +373,6 @@ app.post('/api/login', async (req, res) => {
     });
   }
 });
-
 // ==================== MÓDULO: ROLES ====================
 
 // LISTAR ROLES
@@ -712,10 +721,12 @@ app.get('/api/usuarios/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// CREAR USUARIO
+// CREAR USUARIO (CORREGIDO)
 app.post('/api/usuarios', authenticateToken, async (req, res) => {
   try {
     const { id_rol, nombre_completo, email, usuario, contraseña, estado = 1 } = req.body;
+    
+    console.log('➕ Creando usuario:', { email, usuario, tienePassword: !!contraseña });
     
     if (!email || !contraseña || !nombre_completo) {
       return res.status(400).json({ 
@@ -746,6 +757,7 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
       }
     }
     
+    // Verificar email único
     const emailExists = await pool.query(
       'SELECT * FROM usuarios WHERE email = $1',
       [email]
@@ -760,33 +772,43 @@ app.post('/api/usuarios', authenticateToken, async (req, res) => {
     
     const hashedPassword = await bcrypt.hash(contraseña, 10);
     
+    // ⭐⭐ USAR COMILLAS en contraseña ⭐⭐
     const result = await pool.query(
-      `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, contraseña, estado) 
+      `INSERT INTO usuarios (id_rol, nombre_completo, email, usuario, "contraseña", estado) 
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
       [id_rol, nombre_completo, email, usuario, hashedPassword, estado]
     );
+    
+    console.log('✅ Usuario creado. ID:', result.rows[0].id_usuario);
     
     res.json({
       success: true,
       message: 'Usuario creado exitosamente',
       data: result.rows[0]
     });
+    
   } catch (error) {
-    console.error('Error crear usuario:', error);
+    console.error('🔥 Error crear usuario:', error);
+    console.error('🔥 Detalle:', error.detail);
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Error creando usuario' 
+      message: `Error creando usuario: ${error.message}`,
+      error_detail: error.detail
     });
   }
 });
 
-// ACTUALIZAR USUARIO
+// ACTUALIZAR USUARIO (CORREGIDO)
 app.put('/api/usuarios/:id', authenticateToken, validateNotAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { id_rol, nombre_completo, email, usuario, contraseña, estado } = req.body;
     
-    // Verificar si el rol existe (si se está actualizando)
+    console.log('🔄 Actualizando usuario ID:', id);
+    console.log('📦 Datos recibidos:', { id_rol, nombre_completo, email, usuario, tienePassword: !!contraseña, estado });
+    
+    // Verificar si el rol existe
     if (id_rol) {
       const rolResult = await pool.query(
         'SELECT estado FROM roles WHERE id_rol = $1',
@@ -813,12 +835,17 @@ app.put('/api/usuarios/:id', authenticateToken, validateNotAdmin, async (req, re
     const queryParams = [id_rol, nombre_completo, email, usuario, estado, id];
     
     if (contraseña) {
+      console.log('🔐 Actualizando contraseña para usuario:', id);
       const hashedPassword = await bcrypt.hash(contraseña, 10);
-      updateQuery += ', contraseña = $6';
+      // ⭐⭐ USAR COMILLAS en contraseña ⭐⭐
+      updateQuery += ', "contraseña" = $6';
       queryParams.splice(5, 0, hashedPassword);
     }
     
     updateQuery += ' WHERE id_usuario = $' + queryParams.length + ' RETURNING *';
+    
+    console.log('📝 Query final:', updateQuery);
+    console.log('📝 Parámetros:', queryParams);
     
     const result = await pool.query(updateQuery, queryParams);
     
@@ -834,11 +861,16 @@ app.put('/api/usuarios/:id', authenticateToken, validateNotAdmin, async (req, re
       message: 'Usuario actualizado exitosamente',
       data: result.rows[0]
     });
+    
   } catch (error) {
-    console.error('Error actualizar usuario:', error);
+    console.error('🔥 Error actualizar usuario:', error);
+    console.error('🔥 Detalle:', error.detail);
+    console.error('🔥 Código:', error.code);
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Error actualizando usuario' 
+      message: `Error actualizando usuario: ${error.message}`,
+      error_detail: error.detail
     });
   }
 });
