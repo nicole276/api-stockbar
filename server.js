@@ -220,10 +220,15 @@ app.post('/api/send-recovery-email', async (req, res) => {
   }
 });
 
-// ACTUALIZAR CONTRASEÑA
+// ACTUALIZAR CONTRASEÑA (VERSIÓN CORREGIDA)
 app.post('/api/update-password', async (req, res) => {
+  console.log('🔄 /api/update-password ejecutándose...');
+  
   try {
     const { email, nuevaPassword } = req.body;
+    
+    console.log('📧 Email:', email);
+    console.log('🔑 Password recibido (longitud):', nuevaPassword?.length || 0);
     
     if (!email || !nuevaPassword) {
       return res.status(400).json({ 
@@ -239,10 +244,14 @@ app.post('/api/update-password', async (req, res) => {
       });
     }
     
+    // Verificar si usuario existe
+    console.log('🔍 Buscando usuario en BD...');
     const userResult = await pool.query(
       'SELECT id_usuario FROM usuarios WHERE email = $1',
       [email]
     );
+    
+    console.log('👤 Usuarios encontrados:', userResult.rows.length);
     
     if (userResult.rows.length === 0) {
       return res.status(404).json({ 
@@ -251,24 +260,43 @@ app.post('/api/update-password', async (req, res) => {
       });
     }
     
+    // Hashear password
+    console.log('🔐 Hasheando password...');
     const hashedPassword = await bcrypt.hash(nuevaPassword, 10);
     
-    await pool.query(
-      'UPDATE usuarios SET contraseña = $1, updated_at = NOW() WHERE email = $2',
+    // ⭐⭐ CORRECCIÓN: Quitar updated_at ⭐⭐
+    console.log('📝 Ejecutando UPDATE (sin updated_at)...');
+    const updateResult = await pool.query(
+      'UPDATE usuarios SET contraseña = $1 WHERE email = $2',
       [hashedPassword, email]
     );
+    
+    console.log('✅ UPDATE exitoso. Filas afectadas:', updateResult.rowCount);
     
     res.json({
       success: true,
       message: 'Contraseña actualizada exitosamente',
-      data: { email: email, updated: true }
+      data: { 
+        email: email, 
+        updated: true,
+        user_id: userResult.rows[0].id_usuario 
+      }
     });
     
   } catch (error) {
-    console.error('ERROR update-password:', error);
+    console.error('🔥 ERROR DETALLADO update-password:');
+    console.error('🔥 Mensaje:', error.message);
+    console.error('🔥 Stack:', error.stack);
+    console.error('🔥 Código:', error.code);
+    console.error('🔥 Detalle:', error.detail);
+    console.error('🔥 Tabla:', error.table);
+    console.error('🔥 Columna:', error.column);
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Error del servidor' 
+      message: `Error del servidor: ${error.message}`,
+      error_detail: error.detail,
+      error_column: error.column
     });
   }
 });
